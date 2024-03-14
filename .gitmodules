@@ -1,0 +1,6 @@
+[submodule "picohttpparser"]
+	path = picohttpparser
+	url = https://github.com/h2o/picohttpparser.git
+[submodule "kpabe-content-filtering"]
+	path = kpabe-content-filtering
+	url = https://github.com/acarreo/kpabe-content-filtering.git
