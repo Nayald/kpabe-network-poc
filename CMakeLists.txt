@@ -57,12 +57,25 @@ add_executable(
 target_link_libraries(server ssl crypto relic_s lsss gmp)
 
 add_executable(
+    authority
+    main_authority.cpp
+    logger.cpp
+    socket_handler_manager.cpp
+    kpabe_server.cpp
+    kpabe_utils.cpp
+    ssl_utils.cpp
+    ${kpabe_sources}
+)
+
+target_link_libraries(authority ssl crypto relic_s lsss gmp nlohmann_json::nlohmann_json)
+
+add_executable(
     verifier
     main_verifier.cpp
     logger.cpp
     socket_handler_manager.cpp
     netfilter_handler.cpp
-    kpabe_server.cpp
+    kpabe_client.cpp
     kpabe_utils.cpp
     ssl_utils.cpp
     ${kpabe_sources}

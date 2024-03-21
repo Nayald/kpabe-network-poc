@@ -1,12 +1,6 @@
 extern "C" {
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <openssl/bio.h>
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/ssl.h>
-#include <openssl/x509.h>
+#include <openssl/rand.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -14,13 +8,17 @@ extern "C" {
 
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
-#include <string>
+#include <nlohmann/json.hpp>
+#include <tuple>
 #include <unordered_map>
 
-#include "https_server.h"
+#include "kpabe_server.h"
 #include "kpabe_utils.h"
+#include "logger.h"
+#include "netfilter_handler.h"
 #include "socket_handler_manager.h"
 #include "socket_listener.h"
 
@@ -31,85 +29,93 @@ void signal_handler(int signal) {
     stop = true;
 }
 
-X509 *ca_cert = nullptr;
-EVP_PKEY *ca_pkey = nullptr;
-SSL_CTX *ssl_ctx = nullptr;
-
 bn_t Fq;
 
-std::unordered_map<std::string, std::string> attributes;
-
 int main(int argc, char const *argv[]) {
-    if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << "[certificate path] [private key path]" << std::endl;
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << "[listen_port]" << std::endl;
         return 1;
     }
 
+    uint16_t listen_port = std::atoi(argv[1]);
+
     signal(SIGINT, signal_handler);
     signal(SIGPIPE, SIG_IGN);
+    logger::setMinimalLogLevel(logger::INFO);
 
     if (!init_libraries()) {
-        std::cout << "unable to initialize the KP-ABE library" << std::endl;
+        logger::log(logger::ERROR, "unable to initialize the KP-ABE library");
         return 1;
     }
 
     struct sockaddr_in listen_addr = {};
     listen_addr.sin_family = AF_INET;
-    listen_addr.sin_port = htons(9443);
-    listen_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    listen_addr.sin_port = htons(listen_port);
+    listen_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
-        std::cerr << "error while creating socket" << std::endl;
+        logger::log(logger::ERROR, "error while creating socket");
         return 1;
+    }
+
+    constexpr int enable = 1;
+    if (setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+        logger::log(logger::WARNING, "fail to set SO_REUSEADDR");
     }
 
     int res = bind(listen_sock, (sockaddr *)&listen_addr, sizeof(listen_addr));
     if (res < 0) {
-        std::cerr << "error while binding socket to address -> " << std::strerror(errno) << std::endl;
+        logger::log(logger::ERROR, "error while binding socket to address -> ", std::strerror(errno));
         close(listen_sock);
         return 1;
     }
 
     res = listen(listen_sock, 15);
     if (res < 0) {
-        std::cerr << "error while setting listening state -> " << std::strerror(errno) << std::endl;
+        logger::log(logger::ERROR, "error while setting listening state -> ", std::strerror(errno));
         close(listen_sock);
         return 1;
     }
 
-    std::cerr << "listening on " << inet_ntoa(listen_addr.sin_addr) << ':' << htons(listen_addr.sin_port) << std::endl;
-
-    BIO *bio = BIO_new_file(argv[1], "r");
-    if (!bio || !PEM_read_bio_X509(bio, &ca_cert, NULL, NULL)) {
-        std::cerr << "fail to load root certificate -> " << ERR_error_string(ERR_get_error(), NULL) << std::endl;
-    }
-
-    BIO_free(bio);
-    bio = BIO_new_file(argv[2], "r");
-    if (!bio || !PEM_read_bio_PrivateKey(bio, &ca_pkey, NULL, NULL)) {
-        std::cerr << "fail to load root private key -> " << ERR_error_string(ERR_get_error(), NULL) << std::endl;
-    }
-
-    BIO_free(bio);
-    if (!ca_cert || !ca_pkey) {
-        close(listen_sock);
-        return 1;
-    }
-
-    std::ifstream file("attributes.txt", std::fstream::in);
-    if (file.is_open()) {
-        std::string line;
-        while (std::getline(file, line)) {
-            size_t pos = line.find('\t');
-            attributes.emplace(line.substr(0, pos), line.substr(pos + 1));
+    KPABE_DPVS kpabe;
+    kpabe.setup();
+    KpabeServer::master_key = kpabe.get_master_key();
+    KpabeServer::public_key = kpabe.get_public_key();
+    RAND_bytes(KpabeServer::scalar_key, sizeof(KpabeServer::scalar_key));
+    std::ifstream policies("policies.txt");
+    auto json = nlohmann::json::parse(policies);
+    for (auto &entry : json) {
+        std::string ip = entry["ip"];
+        std::string policy = entry["policy"];
+        std::vector<std::string> wl;
+        for (auto &e : entry["wl"]) {
+            wl.emplace_back(e);
         }
-        file.close();
+
+        std::vector<std::string> bl;
+        for (auto &e : entry["bl"]) {
+            bl.emplace_back(e);
+        }
+
+        KPABE_DPVS_DECRYPTION_KEY dec_key(policy, wl, bl);
+        if (!dec_key.generate(KpabeServer::master_key)) {
+            logger::log(logger::WARNING, "failed to generate decryption key for ", ip);
+            continue;
+        }
+
+        auto it = KpabeServer::client_infos.emplace(std::piecewise_construct, std::forward_as_tuple(ip),
+                                                    std::forward_as_tuple(std::move(policy), std::move(wl), std::move(bl), std::move(dec_key)));
+        if (!it.second) {
+            logger::log(logger::WARNING, "failed to insert key entry for ", ip);
+        } else {
+            logger::log(logger::DEBUG, "inserted entry for ", ip);
+        }
     }
 
     SocketHandlerManager manager;
-    manager.add(std::make_shared<SocketListener<HttpsServer>>(
-        manager, listen_sock, std::string(inet_ntoa(listen_addr.sin_addr)) + ":" + std::to_string(ntohs(listen_addr.sin_port))));
+    manager.add(std::make_shared<SocketListener<KpabeServer>>(manager, listen_sock));
+    logger::log(logger::INFO, "listening on ", inet_ntoa(listen_addr.sin_addr), ':', htons(listen_addr.sin_port));
     while (!stop && manager.handle()) {
     }
 

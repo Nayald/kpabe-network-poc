@@ -8,14 +8,11 @@ extern "C" {
 
 #include <cerrno>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <tuple>
-#include <unordered_map>
 
-#include "kpabe_server.h"
+#include "kpabe_client.h"
 #include "kpabe_utils.h"
 #include "logger.h"
 #include "netfilter_handler.h"
@@ -52,80 +49,29 @@ int main(int argc, char const *argv[]) {
         return 1;
     }
 
-    struct sockaddr_in listen_addr = {};
-    listen_addr.sin_family = AF_INET;
-    listen_addr.sin_port = htons(10000);
-    listen_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
+    struct sockaddr_in authority_addr = {};
+    authority_addr.sin_family = AF_INET;
+    authority_addr.sin_port = htons(10000);
+    authority_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (listen_sock < 0) {
+    int authority_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (authority_sock < 0) {
         logger::log(logger::ERROR, "error while creating socket");
         return 1;
     }
 
-    constexpr int enable = 1;
-    if (setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-        logger::log(logger::WARNING, "fail to set SO_REUSEADDR");
-    }
-
-    int res = bind(listen_sock, (sockaddr *)&listen_addr, sizeof(listen_addr));
-    if (res < 0) {
-        logger::log(logger::ERROR, "error while binding socket to address -> ", std::strerror(errno));
-        close(listen_sock);
+    if (connect(authority_sock, (sockaddr *)&authority_addr, sizeof(authority_addr)) < 0) {
+        logger::log(logger::ERROR, "error while connecting to authority");
         return 1;
-    }
-
-    res = listen(listen_sock, 15);
-    if (res < 0) {
-        logger::log(logger::ERROR, "error while setting listening state -> ", std::strerror(errno));
-        close(listen_sock);
-        return 1;
-    }
-
-    KPABE_DPVS kpabe;
-    kpabe.setup();
-    KpabeServer::master_key = kpabe.get_master_key();
-    KpabeServer::public_key = kpabe.get_public_key();
-    RAND_bytes(KpabeServer::scalar_key, sizeof(KpabeServer::scalar_key));
-    std::ifstream policies("policies.txt");
-    auto json = nlohmann::json::parse(policies);
-    for (auto &entry : json) {
-        std::string ip = entry["ip"];
-        std::string policy = entry["policy"];
-        std::vector<std::string> wl;
-        for (auto &e : entry["wl"]) {
-            wl.emplace_back(e);
-        }
-
-        std::vector<std::string> bl;
-        for (auto &e : entry["bl"]) {
-            bl.emplace_back(e);
-        }
-
-        KPABE_DPVS_DECRYPTION_KEY dec_key(policy, wl, bl);
-        if (!dec_key.generate(KpabeServer::master_key)) {
-            logger::log(logger::WARNING, "failed to generate decryption key for ", ip);
-            continue;
-        }
-
-        auto it = KpabeServer::client_infos.emplace(std::piecewise_construct, std::forward_as_tuple(ip),
-                                                    std::forward_as_tuple(std::move(policy), std::move(wl), std::move(bl), std::move(dec_key)));
-        if (!it.second) {
-            logger::log(logger::WARNING, "failed to insert key entry for ", ip);
-        } else {
-            logger::log(logger::DEBUG, "inserted entry for ", ip);
-        }
     }
 
     SocketHandlerManager manager;
-    auto p = manager.add(std::make_shared<SocketListener<KpabeServer>>(manager, listen_sock));
+    manager.add(std::make_shared<KpabeClient>(manager, authority_sock,
+                                              std::string(inet_ntoa(authority_addr.sin_addr)) + ":" + std::to_string(htons(authority_addr.sin_port)),
+                                              KpabeClient::VERIFIER));
     manager.add(std::make_shared<NetfilterHandler>(manager, queue_num));
-    logger::log(logger::INFO, "listening on ", inet_ntoa(listen_addr.sin_addr), ':', htons(listen_addr.sin_port));
     while (!stop && manager.handle()) {
     }
 
-    if (auto pp = p.lock()) {
-        pp->socketClose();
-    }
     return 0;
 }

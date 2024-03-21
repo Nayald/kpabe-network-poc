@@ -3,8 +3,9 @@ proxy
 server
 html/
 attributes.txt
-verifier
+authority
 policies.txt
+verifier
 
 ### CMake ###
 CMakeLists.txt.user

@@ -14,7 +14,8 @@ extern "C" {
 #include "ssl_utils.h"
 #include "utils.h"
 
-KpabeClient::KpabeClient(SocketHandlerManager &manager, int fd, std::string remote_addr) : SocketHandler(manager, fd, std::move(remote_addr)) {
+KpabeClient::KpabeClient(SocketHandlerManager &manager, int fd, std::string remote_addr, MODE mode)
+        : SocketHandler(manager, fd, std::move(remote_addr)), mode(mode) {
     logger::log(logger::DEBUG, "(fd ", fd, ") role is KpabeClient");
 }
 
@@ -61,7 +62,7 @@ int KpabeClient::handleSocketRead() {
 
         switch (hash(json["type"].get<std::string_view>())) {
             using namespace std::string_view_literals;
-            case hash("info"sv): {
+            case hash("client_info"sv): {
                 const auto &data = json["data"];
                 std::string raw_data = base64_decode(data["public_key"]);
                 logger::log(logger::DEBUG, "(fd ", fd, ") public_key size = ", raw_data.size());
@@ -71,6 +72,18 @@ int KpabeClient::handleSocketRead() {
                 logger::log(logger::DEBUG, "(fd ", fd, ") decryption_key size = ", raw_data.size());
                 raw_data_stream = {raw_data.data(), raw_data.size()};
                 decryption_key.deserialize(raw_data_stream);
+                raw_data = base64_decode(data["scalar_key"]);
+                logger::log(logger::DEBUG, "(fd ", fd, ") scalar_key size = ", raw_data.size());
+                std::memcpy(scalar_key, raw_data.data(), sizeof(scalar_key));
+                logger::log(logger::INFO, "(fd ", fd, ") keys have been updated");
+                break;
+            }
+            case hash("verifier_info"sv): {
+                const auto &data = json["data"];
+                std::string raw_data = base64_decode(data["public_key"]);
+                logger::log(logger::DEBUG, "(fd ", fd, ") public_key size = ", raw_data.size());
+                IMemStream raw_data_stream(raw_data.data(), raw_data.size());
+                public_key.deserialize(raw_data_stream);
                 raw_data = base64_decode(data["scalar_key"]);
                 logger::log(logger::DEBUG, "(fd ", fd, ") scalar_key size = ", raw_data.size());
                 std::memcpy(scalar_key, raw_data.data(), sizeof(scalar_key));
@@ -97,12 +110,21 @@ int KpabeClient::handleSocketWrite() {
     const auto send_time = std::chrono::steady_clock::now();
     if (std::chrono::steady_clock::now() - last_ask_time > std::chrono::minutes(2)) {
         logger::log(logger::DEBUG, "add get request");
-        static constexpr std::string_view GET = R"({"type":"get"})";
+        static constexpr std::string_view CLIENT_GET = R"({"type":"client_get"})";
+        static constexpr std::string_view VERIFIER_GET = R"({"type":"verifier_get"})";
         write_buffer.emplace_back(0xFF);
         write_buffer.emplace_back(0x00);
         write_buffer.emplace_back(0x00);
-        write_buffer.emplace_back(0x0E);
-        write_buffer.insert(write_buffer.end(), GET.begin(), GET.end());
+        switch (mode) {
+            case CLIENT:
+                write_buffer.emplace_back(0x15);
+                write_buffer.insert(write_buffer.end(), CLIENT_GET.begin(), CLIENT_GET.end());
+                break;
+            case VERIFIER:
+                write_buffer.emplace_back(0x17);
+                write_buffer.insert(write_buffer.end(), VERIFIER_GET.begin(), VERIFIER_GET.end());
+                break;
+        }
         last_ask_time = send_time;
     } else if (std::chrono::steady_clock::now() - last_send_time > std::chrono::seconds(5)) {
         logger::log(logger::DEBUG, "add heartbeat request");

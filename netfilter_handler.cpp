@@ -30,7 +30,7 @@ extern "C" {
 #include <cstring>
 #include <vector>
 
-#include "kpabe_server.h"
+#include "kpabe_client.h"
 #include "kpabe_utils.h"
 #include "logger.h"
 #include "ssl_utils.h"
@@ -101,8 +101,71 @@ NetfilterHandler::~NetfilterHandler() {
     mnl_socket_close(nl);
 }
 
+bool isKpabeCompliant(const uint8_t *data, size_t size) {
+    // skip 2 bytes client version
+    // skip 32 bytes client random
+    data += 34;
+    // skip n bytes session id, size is represented wth 1 byte
+    data += *data++;
+    // skip n bytes of cipher suite, size is represented with 2 bytes
+    uint16_t cipher_size = *data++;
+    cipher_size = (cipher_size << 8) + *data++;
+    data += cipher_size;
+    // skip n bytes of compression methods, size is represented with 1 byte
+    data += *data++;
+    // parse extensions, size is 2 bytes
+    uint16_t extensions_size = *data++;
+    extensions_size = (extensions_size << 8) + *data++;
+    KPABE_DPVS_PUBLIC_KEY key;
+    bn_t scalar;
+    int kpabe_status = 0;
+    const uint8_t *const extension_end = data + extensions_size;
+    while (data < extension_end) {
+        uint16_t extension_type = *data++;
+        extension_type = (extension_type << 8) + *data++;
+        uint16_t extension_size = *data++;
+        extension_size = (extension_size << 8) + *data++;
+        printf("found extention %u\n", extension_type);
+        switch (extension_type) {
+            case 0:  // SNI extension
+                // currently contains a list of only 1 entry, so skip 3
+                // first bytes (2 bytes size + 1 byte type)
+                printf("SNI = %.*s\n", extension_size - 5, data + 5);
+                break;
+            case KPABE_PUB_KEY_EXT: {
+                printf("kpabe key size = %u\n", extension_size);
+                for (size_t j = 0; j < extension_size; ++j) {
+                    printf("%02X ", data[j]);
+                }
+                printf("\n");
+                IMemStream raw_data(data, extension_size);
+                key.deserialize(raw_data);
+                kpabe_status |= 0b01;
+                break;
+            }
+            case KPABE_SCALAR_EXT: {
+                printf("kpabe scalar size = %u\n", extension_size);
+                aes_cbc_decrypt(data, extension_size, KpabeClient::scalar_key, KpabeClient::scalar_key + 16,
+                                reinterpret_cast<unsigned char *>(scalar));
+                kpabe_status |= 0b10;
+                for (size_t j = 0; j < sizeof(bn_t); ++j) {
+                    printf("%02X ", reinterpret_cast<unsigned char *>(scalar)[j]);
+                }
+                printf("\n");
+                break;
+            }
+            default:
+                break;
+        }
+
+        data += extension_size;
+    }
+
+    return kpabe_status == 0b11 && KpabeClient::public_key.validate_derived_key(key, scalar);
+}
+
 int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
-    auto *flows = reinterpret_cast<std::pair<std::map<TcpFlow, TcpFlowData>, std::vector<TcpFlowData>> *>(data);
+    auto *const flows = reinterpret_cast<std::pair<std::map<TcpFlow, TcpFlowData>, std::vector<std::pair<bool, uint32_t>>> *>(data);
 
     struct nfqnl_msg_packet_hdr *ph = NULL;
     struct nlattr *attr[NFQA_MAX + 1] = {};
@@ -191,115 +254,95 @@ int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
         printf(", checksum not ready");
     puts(")");
 
-    auto *ip = reinterpret_cast<iphdr *>(payload);
-    if (ip->protocol == IPPROTO_TCP) {
-        auto *tcp = reinterpret_cast<tcphdr *>(payload + ip->ihl * 4);
-        printf("%u.%u.%u.%u:%u -> %u.%u.%u.%u:%u, seq num = %u\n", ip->saddr & 0xFF, (ip->saddr >> 8) & 0xFF, (ip->saddr >> 16) & 0xFF,
-               (ip->saddr >> 24) & 0xFF, htons(tcp->source), ip->daddr & 0xFF, (ip->daddr >> 8) & 0xFF, (ip->daddr >> 16) & 0xFF,
-               (ip->daddr >> 24) & 0xFF, htons(tcp->dest), htonl(tcp->seq));
-
-        printf("header offset: TCP=%d, data=%d (%d relative to TCP)\n", ip->ihl * 4, ip->ihl * 4 + tcp->doff * 4, tcp->doff * 4);
-        uint8_t *data = payload + ip->ihl * 4 + tcp->doff * 4;
-        if (ip->ihl * 4 + tcp->doff * 4 < plen) {
-            // handshake record header ?
-            if (*data == 0x16 && *(data + 1) == 0x03 && *(data + 2) >= 0x01) {
-                data += 3;
-                // record size is represented with 2 bytes
-                uint16_t record_size = *data++;
-                record_size = (record_size << 8) + *data++;
-                printf("tls handshake record size = %u bytes\n", record_size);
-                // client hello ?
-                if (*data == 0x01) {
-                    ++data;
-                    // client hello size is represented with 3 bytes
-                    uint32_t clienthello_size = *data++;
-                    clienthello_size = (clienthello_size << 8) + *data++;
-                    clienthello_size = (clienthello_size << 8) + *data++;
-                    printf("client hello size = %u bytes\n", clienthello_size);
-                    // skip 2 bytes client version
-                    // skip 32 bytes client random
-                    data += 34;
-                    // skip n bytes session id, size is represented wth 1 byte
-                    data += *data++;
-                    // skip n bytes of cipher suite, size is represented with 2 bytes
-                    uint16_t cipher_size = *data++;
-                    cipher_size = (cipher_size << 8) + *data++;
-                    data += cipher_size;
-                    // skip n bytes of compression methods, size is represented with 1 byte
-                    data += *data++;
-                    // parse extensions, size is 2 bytes
-                    uint16_t extensions_size = *data++;
-                    extensions_size = (extensions_size << 8) + *data++;
-                    printf("client hello contains %u bytes of extensions\n", extensions_size);
-                    KPABE_DPVS_PUBLIC_KEY key;
-                    bn_t scalar;
-                    int kpabe_status = 0;
-                    while (data < payload + plen) {
-                        uint16_t extension_type = *data++;
-                        extension_type = (extension_type << 8) + *data++;
-                        uint16_t extension_size = *data++;
-                        extension_size = (extension_size << 8) + *data++;
-                        printf("contains extention %u\n", extension_type);
-                        switch (extension_type) {
-                            case 0:  // SNI extension
-                                // currently contains a list of only 1 entry, so skip 3
-                                // first bytes (2 bytes size + 1 byte type)
-                                printf("SNI = %.*s\n", extension_size - 5, data + 5);
-                                break;
-                            case KPABE_PUB_KEY_EXT: {
-                                printf("kpabe key size = %u\n", extension_size);
-                                for (size_t j = 0; j < extension_size; ++j) {
-                                    printf("%02X ", data[j]);
-                                }
-                                printf("\n");
-                                IMemStream raw_data((char *)data, extension_size);
-                                key.deserialize(raw_data);
-                                kpabe_status |= 0b01;
-                                break;
-                            }
-                            case KPABE_SCALAR_EXT: {
-                                printf("kpabe scalar size = %u\n", extension_size);
-                                aes_cbc_decrypt(data, extension_size, KpabeServer::scalar_key, KpabeServer::scalar_key + 16,
-                                                reinterpret_cast<unsigned char *>(scalar));
-                                kpabe_status |= 0b10;
-                                for (size_t j = 0; j < sizeof(bn_t); ++j) {
-                                    printf("%02X ", reinterpret_cast<unsigned char *>(scalar)[j]);
-                                }
-                                printf("\n");
-                                break;
-                            }
-                            default:
-                                break;
-                        }
-
-                        data += extension_size;
-                    }
-
-                    if (kpabe_status != 0b11) {
-                        printf("client hello does not contains kpabe extensions\n");
-                    } else {
-                        std::cout << KpabeServer::public_key.validate_derived_key(key, scalar) << std::endl;
-                        if (KpabeServer::public_key.validate_derived_key(key, scalar)) {
-                            printf("client hello compiles with policy\n");
-                        } else {
-                            printf("client hello does not comply with policy\n");
-                        }
-                    }
-                } else {
-                    printf("payload is not a client hello (starts with %02X %02X)\n", data[0], data[1]);
-                }
-            } else {
-                printf("payload is not a tls handshake record (starts with %02X %02X)\n", data[0], data[1]);
-            }
-        } else {
-            printf("no data -> ACK\n");
-        }
+    const auto *ip = reinterpret_cast<iphdr *>(payload);
+    if (ip->protocol != IPPROTO_TCP) {
+        // only handle tcp = forward
+        flows->second.emplace_back(true, id);
+        return MNL_CB_OK;
     }
 
-    TcpFlowData tcp_data;
-    tcp_data.verdict = true;
-    tcp_data.packet_ids.emplace_back(id);
-    flows->second.emplace_back(std::move(tcp_data));
+    const auto *tcp = reinterpret_cast<tcphdr *>(payload + ip->ihl * 4);
+    printf("%u.%u.%u.%u:%u -> %u.%u.%u.%u:%u, seq num = %u\n", ip->saddr & 0xFF, (ip->saddr >> 8) & 0xFF, (ip->saddr >> 16) & 0xFF,
+           (ip->saddr >> 24) & 0xFF, htons(tcp->source), ip->daddr & 0xFF, (ip->daddr >> 8) & 0xFF, (ip->daddr >> 16) & 0xFF,
+           (ip->daddr >> 24) & 0xFF, htons(tcp->dest), htonl(tcp->seq));
+    const TcpFlow tcp_flow = {ip->saddr, ip->daddr, tcp->source, tcp->dest};
+    const size_t headers_size = ip->ihl * 4 + tcp->doff * 4;
+    if (headers_size >= plen) {
+        // no data = forward
+        if (tcp->syn) {
+            flows->first.insert_or_assign(tcp_flow, TcpFlowData());
+        }
+
+        if (tcp->fin) {
+            flows->first.erase(tcp_flow);
+        }
+
+        flows->second.emplace_back(true, id);
+        return MNL_CB_OK;
+    }
+
+    auto it = flows->first.find(tcp_flow);
+    if (it == flows->first.end()) {
+        // no struct = drop
+        flows->second.emplace_back(false, id);
+        return MNL_CB_OK;
+    }
+
+    if (it->second.validated) {
+        // if a valid handshake already occurs = forward
+        flows->second.emplace_back(true, id);
+        return MNL_CB_OK;
+    }
+
+    const uint8_t *tcp_payload = payload + headers_size;
+    const size_t tcp_payload_size = plen - headers_size;
+    if (tcp_payload_size < 5 || tcp_payload[0] != 0x16) {
+        // not a TLS handshake record = drop
+        flows->second.emplace_back(false, id);
+        return MNL_CB_OK;
+    }
+
+    // ignore TLS version (2 Bytes)
+    uint16_t record_size = tcp_payload[3];
+    record_size = (record_size << 8) + tcp_payload[4];
+    if (!it->second.pending_data.empty()) {
+        it->second.pending_data.insert(it->second.pending_data.end(), tcp_payload + 5, tcp_payload + tcp_payload_size - 5);
+        uint32_t clienthello_size = it->second.pending_data[1];
+        clienthello_size = (clienthello_size << 8) + it->second.pending_data[2];
+        clienthello_size = (clienthello_size << 8) + it->second.pending_data[3];
+        if (it->second.pending_data.size() < clienthello_size + 4) {
+            it->second.pending_ids.emplace_back(id);
+            return MNL_CB_OK;
+        }
+
+        it->second.validated = isKpabeCompliant(it->second.pending_data.data() + 4, it->second.pending_data.size() - 4);
+        it->second.pending_data.clear();
+    } else {
+        if (tcp_payload_size < 9 || tcp_payload[5] != 0x01) {
+            // not the beginning of a client hello = drop
+            flows->second.emplace_back(false, id);
+            return MNL_CB_OK;
+        }
+
+        uint32_t clienthello_size = tcp_payload[6];
+        clienthello_size = (clienthello_size << 8) + tcp_payload[7];
+        clienthello_size = (clienthello_size << 8) + tcp_payload[8];
+        if (tcp_payload_size < clienthello_size + 9) {
+            // wait for more data
+            it->second.pending_data.insert(it->second.pending_data.end(), tcp_payload + 5, tcp_payload + tcp_payload_size - 5);
+            it->second.pending_ids.emplace_back(id);
+            return MNL_CB_OK;
+        }
+
+        it->second.validated = isKpabeCompliant(tcp_payload + 9, tcp_payload_size - 9);
+    }
+
+    for (const auto pending_id : it->second.pending_ids) {
+        flows->second.emplace_back(it->second.validated, pending_id);
+    }
+
+    it->second.pending_ids.clear();
+    flows->second.emplace_back(it->second.validated, id);
     return MNL_CB_OK;
 }
 
@@ -325,27 +368,25 @@ int NetfilterHandler::handleSocketRead() {
 }
 
 int NetfilterHandler::handleSocketWrite() {
-    // logger::log(logger::DEBUG, "(fd ", fd, ") ", flows.second.size());
-    for (TcpFlowData flow_data : flows.second) {
-        for (const auto id : flow_data.packet_ids) {
-            nlmsghdr *msg = nfq_nlmsg_put(write_buffer.data(), NFQNL_MSG_VERDICT, queue_num);
-            nfq_nlmsg_verdict_put(msg, id, NF_ACCEPT);
+    for (const auto &[verdict, id] : flows.second) {
+        nlmsghdr *msg = nfq_nlmsg_put(write_buffer.data(), NFQNL_MSG_VERDICT, queue_num);
+        printf("id: %d, verdict: %d\n", id, verdict);
+        nfq_nlmsg_verdict_put(msg, id, verdict ? NF_ACCEPT : NF_DROP);
 
-            /* example to set the connmark. First, start NFQA_CT section: */
-            nlattr *attr = mnl_attr_nest_start(msg, NFQA_CT);
+        /* example to set the connmark. First, start NFQA_CT section: */
+        nlattr *attr = mnl_attr_nest_start(msg, NFQA_CT);
 
-            /* then, add the connmark attribute: */
-            mnl_attr_put_u32(msg, CTA_MARK, htonl(1));
-            // mnl_attr_put_u32(msg, NFQA_MARK, htonl(1));
-            /* more conntrack attributes, e.g. CTA_LABELS could be set here */
+        /* then, add the connmark attribute: */
+        // mnl_attr_put_u32(msg, CTA_MARK, htonl(1));
+        // mnl_attr_put_u32(msg, NFQA_MARK, htonl(1));
+        /* more conntrack attributes, e.g. CTA_LABELS could be set here */
 
-            /* end conntrack section */
-            mnl_attr_nest_end(msg, attr);
+        /* end conntrack section */
+        mnl_attr_nest_end(msg, attr);
 
-            if (mnl_socket_sendto(nl, msg, msg->nlmsg_len) < 0) {
-                logger::log(logger::ERROR, "(fd ", fd, ") error while sending data -> ", std::strerror(errno));
-                return 0;
-            }
+        if (mnl_socket_sendto(nl, msg, msg->nlmsg_len) < 0) {
+            logger::log(logger::ERROR, "(fd ", fd, ") error while sending data -> ", std::strerror(errno));
+            return 0;
         }
     }
 

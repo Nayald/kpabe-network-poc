@@ -60,7 +60,7 @@ int KpabeServer::handleSocketRead() {
         const std::string ip = remote_address.substr(0, remote_address.find(':'));
         switch (hash(json["type"].get<std::string_view>())) {
             using namespace std::string_view_literals;
-            case hash("renew"sv): {
+            case hash("client_renew"sv): {
                 auto it = client_infos.find(ip);
                 if (it == client_infos.end()) {
                     logger::log(logger::INFO, "(fd ", fd, ") ", ip, " is not in the database");
@@ -69,7 +69,7 @@ int KpabeServer::handleSocketRead() {
 
                 it->second.decryption_key.generate(master_key);
             }  // no break because of extra stuff to do for renew
-            case hash("get"sv): {
+            case hash("client_get"sv): {
                 logger::log(logger::DEBUG, "got get request from ", remote_address);
                 auto it = client_infos.find(ip);
                 if (it == client_infos.end()) {
@@ -96,7 +96,7 @@ int KpabeServer::handleSocketRead() {
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
                 size_t msg_size = write_buffer.size();
-                static constexpr std::string_view JSON_PART1 = R"({"type":"info","data":{"public_key":")";
+                static constexpr std::string_view JSON_PART1 = R"({"type":"client_info","data":{"public_key":")";
                 write_buffer.insert(write_buffer.end(), JSON_PART1.begin(), JSON_PART1.end());
                 std::stringstream raw_data;
                 public_key.serialize(raw_data);
@@ -115,6 +115,33 @@ int KpabeServer::handleSocketRead() {
                 write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
                 static constexpr std::string_view JSON_PART4 = R"("}})";
                 write_buffer.insert(write_buffer.end(), JSON_PART4.begin(), JSON_PART4.end());
+                msg_size = write_buffer.size() - msg_size;
+                write_buffer[pos + 3] = msg_size & 0xFF;
+                write_buffer[pos + 2] = (msg_size >> 8) & 0xFF;
+                write_buffer[pos + 1] = (msg_size >> 16) & 0xFF;
+                break;
+            }
+            case hash("verifier_get"sv): {
+                size_t pos = write_buffer.size();
+                write_buffer.emplace_back(0xff);
+                write_buffer.emplace_back(0x00);
+                write_buffer.emplace_back(0x00);
+                write_buffer.emplace_back(0x00);
+                size_t msg_size = write_buffer.size();
+                static constexpr std::string_view JSON_PART1 = R"({"type":"verifier_info","data":{"public_key":")";
+                write_buffer.insert(write_buffer.end(), JSON_PART1.begin(), JSON_PART1.end());
+                std::stringstream raw_data;
+                public_key.serialize(raw_data);
+                std::string base64 = base64_encode(raw_data.str());
+                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
+                raw_data.str(std::string());
+                raw_data.clear();
+                static constexpr std::string_view JSON_PART2 = R"(","scalar_key":")";
+                write_buffer.insert(write_buffer.end(), JSON_PART2.begin(), JSON_PART2.end());
+                base64 = std::string(base64_encode(scalar_key, sizeof(scalar_key)));
+                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
+                static constexpr std::string_view JSON_PART3 = R"("}})";
+                write_buffer.insert(write_buffer.end(), JSON_PART3.begin(), JSON_PART3.end());
                 msg_size = write_buffer.size() - msg_size;
                 write_buffer[pos + 3] = msg_size & 0xFF;
                 write_buffer[pos + 2] = (msg_size >> 8) & 0xFF;

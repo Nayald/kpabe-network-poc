@@ -7,7 +7,6 @@ extern "C" {
 }
 
 #include <string>
-#include <vector>
 
 #include "logger.h"
 
@@ -17,7 +16,7 @@ void handleErrors(void) {
     abort();
 }
 
-int aes_cbc_encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key, unsigned char *iv, unsigned char *ciphertext) {
+int aes_cbc_encrypt(const unsigned char *plaintext, int plaintext_len, unsigned char *key, unsigned char *iv, unsigned char *ciphertext) {
     EVP_CIPHER_CTX *ctx;
 
     int len;
@@ -60,7 +59,7 @@ int aes_cbc_encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *
     return ciphertext_len;
 }
 
-int aes_cbc_decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key, unsigned char *iv, unsigned char *plaintext) {
+int aes_cbc_decrypt(const unsigned char *ciphertext, int ciphertext_len, unsigned char *key, unsigned char *iv, unsigned char *plaintext) {
     EVP_CIPHER_CTX *ctx;
 
     int len;

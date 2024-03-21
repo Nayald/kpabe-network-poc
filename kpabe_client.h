@@ -9,11 +9,13 @@
 
 class KpabeClient : public SocketHandlerManager::SocketHandler {
     public:
+    enum MODE { CLIENT, VERIFIER };
+
     inline static KPABE_DPVS_PUBLIC_KEY public_key;
     inline static KPABE_DPVS_DECRYPTION_KEY decryption_key;
     inline static unsigned char scalar_key[32];  // AES key, 16 bytes key and 16 bytes iv
 
-    explicit KpabeClient(SocketHandlerManager &manager, int fd, std::string remote_addr);
+    explicit KpabeClient(SocketHandlerManager &manager, int fd, std::string remote_addr, MODE mode);
     ~KpabeClient();
 
     int handleSocketRead() override;
@@ -22,6 +24,7 @@ class KpabeClient : public SocketHandlerManager::SocketHandler {
     bool socketWantWrite() const override;
 
     private:
+    MODE mode;
     std::chrono::steady_clock::time_point last_send_time = {};
     std::chrono::steady_clock::time_point last_ask_time = {};
 };

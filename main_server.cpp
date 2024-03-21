@@ -56,7 +56,7 @@ int main(int argc, char const *argv[]) {
     struct sockaddr_in listen_addr = {};
     listen_addr.sin_family = AF_INET;
     listen_addr.sin_port = htons(9443);
-    listen_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    listen_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
