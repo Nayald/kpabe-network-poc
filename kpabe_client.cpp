@@ -1,5 +1,7 @@
 #include "kpabe_client.h"
 
+#include "kpabe-content-filtering/dpvs/vector_ec.hpp"
+
 extern "C" {
 #include <sys/socket.h>
 }
@@ -64,28 +66,28 @@ int KpabeClient::handleSocketRead() {
             using namespace std::string_view_literals;
             case hash("client_info"sv): {
                 const auto &data = json["data"];
-                std::string raw_data = base64_decode(data["public_key"]);
-                logger::log(logger::DEBUG, "(fd ", fd, ") public_key size = ", raw_data.size());
-                IMemStream raw_data_stream(raw_data.data(), raw_data.size());
-                public_key.deserialize(raw_data_stream);
+                std::vector<unsigned char> raw_data = base64_decode(data["public_key"]);
+                ByteString bytes;
+                bytes.swap(raw_data);
+                public_key.deserialize(bytes);
+
                 raw_data = base64_decode(data["decryption_key"]);
-                logger::log(logger::DEBUG, "(fd ", fd, ") decryption_key size = ", raw_data.size());
-                raw_data_stream = {raw_data.data(), raw_data.size()};
-                decryption_key.deserialize(raw_data_stream);
+                bytes.swap(raw_data);
+                decryption_key.deserialize(bytes);
+
                 raw_data = base64_decode(data["scalar_key"]);
-                logger::log(logger::DEBUG, "(fd ", fd, ") scalar_key size = ", raw_data.size());
                 std::memcpy(scalar_key, raw_data.data(), sizeof(scalar_key));
                 logger::log(logger::INFO, "(fd ", fd, ") keys have been updated");
                 break;
             }
             case hash("verifier_info"sv): {
                 const auto &data = json["data"];
-                std::string raw_data = base64_decode(data["public_key"]);
-                logger::log(logger::DEBUG, "(fd ", fd, ") public_key size = ", raw_data.size());
-                IMemStream raw_data_stream(raw_data.data(), raw_data.size());
-                public_key.deserialize(raw_data_stream);
+                std::vector<unsigned char> raw_data = base64_decode(data["public_key"]);
+                ByteString bytes;
+                bytes.swap(raw_data);
+                public_key.deserialize(bytes);
+
                 raw_data = base64_decode(data["scalar_key"]);
-                logger::log(logger::DEBUG, "(fd ", fd, ") scalar_key size = ", raw_data.size());
                 std::memcpy(scalar_key, raw_data.data(), sizeof(scalar_key));
                 logger::log(logger::INFO, "(fd ", fd, ") keys have been updated");
                 break;

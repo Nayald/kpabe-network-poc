@@ -1,9 +1,5 @@
 #include "http_client.h"
 
-#include <unistd.h>
-
-#include <sstream>
-
 extern "C" {
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -14,23 +10,29 @@ extern "C" {
 #include <openssl/x509.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <unistd.h>
 }
 
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "kpabe-content-filtering/dpvs/vector_ec.hpp"
 #include "kpabe_client.h"
 #include "kpabe_utils.h"
 #include "logger.h"
 #include "socket_handler_manager.h"
 #include "ssl_utils.h"
+#include "utils.h"
 
-using SslData = std::pair<std::vector<unsigned char>, std::vector<unsigned char>>;
+// using sslData = std::pair<std::vector<unsigned char>, std::vector<unsigned
+// char>>;
+using SslData = std::pair<ByteString, ByteString>;
 
 HttpClient::HttpClient(SocketHandlerManager &manager, int fd, std::string addr, const std::shared_ptr<SocketHandler> &peer, bool is_over_ssl)
         : SocketHandler(manager, fd, std::move(addr), peer), is_over_ssl(is_over_ssl) {
@@ -65,7 +67,6 @@ int HttpClient::handleSocketRead() {
             if (err == SSL_ERROR_ZERO_RETURN) {
                 logger::log(logger::DEBUG, "(fd ", fd, ") TLS connection closed by ", remote_address);
                 SSL_shutdown(ssl);
-                // free(SSL_get_app_data(ssl));
                 delete reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
                 SSL_free(ssl);
                 ssl = nullptr;
@@ -145,7 +146,7 @@ static int addKey(SSL *ssl, unsigned int ext_type, unsigned int context, const u
         return 0;
     }
 
-    auto *data = reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
+    auto *const data = reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
     *out = data->first.data();
     *outlen = data->first.size();
     return 1;
@@ -157,7 +158,7 @@ static int addScalar(SSL *ssl, unsigned int ext_type, unsigned int context, cons
         return 0;
     }
 
-    auto *data = reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
+    auto *const data = reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
     *out = data->second.data();
     *outlen = data->second.size();
     return 1;
@@ -181,14 +182,16 @@ int HttpClient::handleSslHandshake() {
             logger::log(logger::WARNING, "(fd ", fd, ") failed to set SNI");
         }
 
-        auto *data = new SslData;
-        KPABE_DPVS_PUBLIC_KEY randomized_public_key = KpabeClient::public_key.randomize(scalar);
-        data->first.resize(randomized_public_key.bytes_size());
-        OMemStream oms(data->first.data(), data->first.size());
-        randomized_public_key.serialize(oms);
-        data->second.resize((sizeof(bn_t) + 16) & ~15);
-        data->second.resize(aes_cbc_encrypt(reinterpret_cast<unsigned char *>(scalar), sizeof(scalar), KpabeClient::scalar_key,
-                                            KpabeClient::scalar_key + 16, data->second.data()));
+        auto *const data = new SslData;
+        const auto randomized_public_key_info = KpabeClient::public_key.randomize();
+        randomized_public_key_info.first.serialize(data->first);
+        scalar = randomized_public_key_info.second;
+        scalar.serialize(data->second);
+        const size_t scalar_size = data->second.size();
+        // resize for inplace encryption, make size fit padding up to 16 more Bytes
+        data->second.resize((scalar_size + 16) & ~15);
+        data->second.resize(
+            aes_cbc_encrypt(data->second.data(), scalar_size, KpabeClient::scalar_key, KpabeClient::scalar_key + 16, data->second.data()));
         SSL_set_app_data(ssl, data);
         // copy in case key change during the session
         kpabe_dec_key = KpabeClient::decryption_key;
@@ -209,7 +212,6 @@ int HttpClient::handleSslHandshake() {
             case SSL_ERROR_ZERO_RETURN:
                 logger::log(logger::WARNING, "(fd ", fd, ") TLS handshake halted by ", remote_address);
                 SSL_shutdown(ssl);
-                // free(SSL_get_app_data(ssl));
                 delete reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
                 SSL_free(ssl);
                 return -1;
@@ -229,7 +231,6 @@ int HttpClient::handleHttpResponseHeader() {
     int size = response_header.parse(read_buffer);
     if (size == -1) {
         logger::log(logger::ERROR, "(fd ", fd, ") failed to parse response from ", remote_address);
-        logger::log(logger::DEBUG, "frist 32 bytes:\n", std::string_view(read_buffer.data(), std::min(read_buffer.size(), 32UL)));
         return 0;
     }
 
@@ -239,8 +240,11 @@ int HttpClient::handleHttpResponseHeader() {
         return 1;
     }
 
-    logger::log(logger::INFO, "(fd ", fd, ") got response ", response_header.getCode(), ' ', response_header.getMessage(), " from ", remote_address);
+    // switch to raw mode if 101 Switch Protocol is reveived as it will no longer
+    // be HTTP
     if (response_header.getCode() == 101) {
+        logger::log(logger::INFO, "(fd ", fd, ") got ", response_header.getCode(), ' ', response_header.getMessage(), " response from ",
+                    remote_address);
         auto p = peer.lock();
         if (!p) {
             logger::log(logger::ERROR, "(fd ", fd, ") peer no longer valid");
@@ -255,7 +259,7 @@ int HttpClient::handleHttpResponseHeader() {
     }
 
     read_buffer.erase(read_buffer.begin(), read_buffer.begin() + size);
-    if (const auto v = response_header.getHeaderValue("Content-Length")) {
+    if (const auto v = response_header.getHeaderValue("content-length")) {
         logger::log(logger::DEBUG, "(fd ", fd, ") response body has a size of ", remaining_bytes);
         remaining_bytes = std::stoi(v.value());
     } else {
@@ -264,14 +268,65 @@ int HttpClient::handleHttpResponseHeader() {
         is_chunked_body = true;
     }
 
-    if (const auto v = response_header.getHeaderValue("Content-Encoding"); v && v->find("aes_128_cbc/kp-abe") != std::string::npos) {
+    static constexpr std::string_view TRIM_CHARS = " \n\r\t\f";
+    if (const auto v = response_header.getHeaderValue("transfer-encoding")) {
+        size_t last = 0;
+        size_t pos = 0;
+        do {
+            pos = v->find(',', last);
+            std::string_view encoding(v->data() + last, std::min(pos, v->size()) - last);
+            size_t trim_pos = encoding.find_first_not_of(TRIM_CHARS);
+            encoding.remove_prefix(trim_pos != v->npos ? trim_pos : encoding.size());
+            trim_pos = encoding.find_last_not_of(TRIM_CHARS);
+            encoding.remove_suffix(encoding.size() - (trim_pos != v->npos ? trim_pos + 1 : encoding.size()));
+            switch (hash(encoding)) {
+                default:
+                    logger::log(logger::WARNING, "(fd ", fd, ") unknown ", encoding, " encoding");
+                    break;
+            }
+
+            last = pos + 1;
+        } while (pos != v->npos);
+
+        response_header.removeHeader("transfer-encoding");
+    }
+
+    if (const auto v = response_header.getHeaderValue("content-encoding")) {
+        std::vector<std::string_view> encodings;
+        size_t last = 0;
+        size_t pos = 0;
+        do {
+            pos = v->find(',', last);
+            auto &encoding = encodings.emplace_back(v->data() + last, std::min(pos, v->size()) - last);
+            size_t &&trim_pos = encoding.find_first_not_of(TRIM_CHARS);
+            encoding.remove_prefix(trim_pos != v->npos ? trim_pos : encoding.size());
+            trim_pos = encoding.find_last_not_of(TRIM_CHARS);
+            encoding.remove_suffix(encoding.size() - (trim_pos != v->npos ? trim_pos + 1 : encoding.size()));
+            last = pos + 1;
+        } while (pos != v->npos);
+
+        if (const auto kpabe_encoding = std::find(encodings.begin(), encodings.end(), "aes_128_cbc/kp-abe"); kpabe_encoding != encodings.end()) {
+            // undo others encodings up to kp-abe
+            auto encoding = encodings.begin();
+            while (encoding != kpabe_encoding) {
+                switch (hash(*encoding)) {
+                    default:
+                        logger::log(logger::WARNING, "(fd ", fd, ") unknown ", *encoding, " encoding");
+                        break;
+                }
+
+                ++encoding;
+            }
+        }
+    }
+
+    if (const auto v = response_header.getHeaderValue("content-encoding"); v && v->find("aes_128_cbc/kp-abe") != std::string::npos) {
         logger::log(logger::DEBUG, "(fd ", fd, ") response body is encrypted with KP-ABE");
         const auto start = std::chrono::steady_clock::now();
-        if (const auto encrypted_aes_key_base64 = response_header.getHeaderValue("Decryption-Key"); encrypted_aes_key_base64.has_value()) {
-            std::string encrypted_aes_key = base64_decode(encrypted_aes_key_base64.value());
+        if (const auto encrypted_aes_key_base64 = response_header.getHeaderValue("decryption-key"); encrypted_aes_key_base64.has_value()) {
+            std::vector<unsigned char> encrypted_aes_key = base64_decode(encrypted_aes_key_base64.value());
             KPABE_DPVS_CIPHERTEXT aes_key_ciphertext;
-            IMemStream encrypted_aes_key_buffer(encrypted_aes_key.data(), encrypted_aes_key.size());
-            aes_key_ciphertext.deserialize(encrypted_aes_key_buffer);
+            aes_key_ciphertext.deserialize(encrypted_aes_key);
             aes_key_ciphertext.remove_scalar(scalar);
             dec_key.resize(32);
             if (aes_key_ciphertext.decrypt(dec_key.data(), kpabe_dec_key)) {
@@ -320,9 +375,11 @@ int HttpClient::handleHttpFixedLengthBody() {
             }
 
             unsigned char *plaintext = new unsigned char[remaining_bytes];
-            // when AES_128_CBC, body_dec_key is 32 bytes with first 16 bytes as AES key and others as IV
+            // when AES_128_CBC, body_dec_key is 32 bytes with first 16 bytes as AES key
+            // and others as IV
             size = aes_cbc_decrypt((unsigned char *)read_buffer.data(), remaining_bytes, dec_key.data(), dec_key.data() + 16, plaintext);
-            // fill remaining bytes with blank to respect Content-Length provided by the header
+            // fill remaining bytes with blank to respect Content-Length provided by the
+            // header
             std::memset(plaintext + size, ' ', remaining_bytes - size);
             p->socketWrite((char *)plaintext, remaining_bytes);
             read_buffer.erase(read_buffer.begin(), read_buffer.begin() + remaining_bytes);

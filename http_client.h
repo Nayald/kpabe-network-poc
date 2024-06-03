@@ -40,7 +40,7 @@ class HttpClient : public SocketHandlerManager::SocketHandler {
     HttpResponseHeader response_header;
     size_t remaining_bytes = 0;
     bool is_chunked_body = false;
-    bn_t scalar;
+    ZP scalar;
     KPABE_DPVS_DECRYPTION_KEY kpabe_dec_key;
     KPABE_METHOD kpabe_method = NONE;
     std::vector<unsigned char> dec_key;

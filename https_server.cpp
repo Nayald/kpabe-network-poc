@@ -1,3 +1,4 @@
+#include "kpabe-content-filtering/dpvs/vector_ec.hpp"
 extern "C" {
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -23,6 +24,7 @@ extern "C" {
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -36,6 +38,9 @@ extern "C" {
 #include "utils.h"
 
 extern std::unordered_map<std::string, std::string> attributes;
+
+static const std::set<std::string> GLOBAL_ATTIBUTE_SET = {"in-game-purchase", "violence",      "horror", "bad-language", "sex", "drugs",
+                                                          "gambling",         "discrimination"};
 
 HttpsServer::HttpsServer(SocketHandlerManager &manager, int fd, std::string addr) : SocketHandler(manager, fd, std::move(addr)) {
     logger::log(logger::DEBUG, "(fd ", fd, ") role is HttpsServer");
@@ -114,8 +119,9 @@ int HttpsServer::handleSocketWrite() {
 static int parseKey(SSL *ssl, unsigned int ext_type, unsigned int context, const unsigned char *in, size_t inlen, X509 *x, size_t chainidx, int *al,
                     void *parse_arg) {
     logger::log(logger::DEBUG, "got KPABE key extension with size = ", inlen);
-    IMemStream raw_data(in, inlen);
     auto *pub_key = new KPABE_DPVS_PUBLIC_KEY();
+    ByteString raw_data;
+    raw_data.assign(in, in + inlen);
     pub_key->deserialize(raw_data);
     SSL_set_app_data(ssl, pub_key);
     return 1;
@@ -283,8 +289,8 @@ int HttpsServer::handleHttpRequest() {
             }
 
             size_t body_len = std::filesystem::file_size(filepath);
-            std::vector<char> body((body_len + 16) & ~15);
-            file.read(body.data(), body_len);
+            std::vector<unsigned char> body((body_len + 16) & ~15);
+            file.read((char *)body.data(), body_len);
             file.close();
 
             std::string header =
@@ -313,14 +319,11 @@ int HttpsServer::handleHttpRequest() {
 
             if (const auto it = attributes.find(filepath); SSL_get_app_data(ssl) && it != attributes.end()) {
                 const auto start_kpabe = std::chrono::steady_clock::now();
-                bn_t phi;
-                unsigned char aes_key[32];
-                generate_session_key(aes_key, phi);
 
-                // unsigned char *ciphertext = new unsigned char[(body.size() + 16) & ~15];
-                // due to current size restriction -> first half is aes key and second half is iv
-                body.resize(aes_cbc_encrypt(reinterpret_cast<unsigned char *>(body.data()), body_len, aes_key, aes_key + 16,
-                                            reinterpret_cast<unsigned char *>(body.data())));
+                // bn_t phi;
+                unsigned char aes_key[32];
+                // generate_session_key(aes_key, phi);
+                // RAND_bytes(aes_key, 32);
 
                 std::string host;
                 for (phr_header header : headers) {
@@ -331,18 +334,23 @@ int HttpsServer::handleHttpRequest() {
                 }
 
                 KPABE_DPVS_CIPHERTEXT aes_key_ciphertext(it->second, host);
-                if (aes_key_ciphertext.encrypt(phi, *reinterpret_cast<KPABE_DPVS_PUBLIC_KEY *>(SSL_get_app_data(ssl)))) {
+                if (aes_key_ciphertext.encrypt(aes_key, *reinterpret_cast<KPABE_DPVS_PUBLIC_KEY *>(SSL_get_app_data(ssl)))) {
                     // body.assign(reinterpret_cast<char *>(ciphertext), reinterpret_cast<char *>(ciphertext) + size);
-                    std::stringstream aes_key_raw_buffer;
-                    aes_key_ciphertext.serialize(aes_key_raw_buffer);
-                    header += "Content-Encoding: aes_128_cbc/kp-abe\r\nDecryption-Key: " + base64_encode(aes_key_raw_buffer.str()) + "\r\n";
+                    ByteString aes_key_raw;
+                    aes_key_ciphertext.serialize(aes_key_raw);
+                    header += "Content-Encoding: aes_128_cbc/kp-abe\r\nDecryption-Key: " + base64_encode(aes_key_raw) + "\r\n";
+                    // due to current size restriction -> first half is aes key and second half is iv
+                    body.resize(aes_cbc_encrypt(body.data(), body_len, aes_key, aes_key + 16, body.data()));
                 } else {
                     logger::log(logger::ERROR, "(fd ", fd, ") something go wrong with kpabe encryption for ", std::string_view(path, path_len));
+                    body.resize(body_len);
                 }
 
-                bn_free(phi);
+                // bn_free(phi);
                 logger::log(logger::INFO, "(fd ", fd, ") KP-ABE encryption took ",
                             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_kpabe));
+            } else {
+                body.resize(body_len);
             }
 
             header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";

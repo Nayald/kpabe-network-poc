@@ -1,3 +1,5 @@
+#include <string_view>
+#include <utility>
 extern "C" {
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -11,15 +13,13 @@ extern "C" {
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-
-#include "picohttpparser/picohttpparser.h"
 }
 
 #include <cerrno>
 #include <cstring>
 #include <iostream>
-#include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "https_server.h"
 #include "kpabe-content-filtering/kpabe/kpabe.hpp"
@@ -34,9 +34,46 @@ void signal_handler(int signal) {
     stop = true;
 }
 
-bn_t Fq;
-
 std::unordered_map<std::string, std::string> attributes;
+
+std::string negate(const std::string_view &attributes) {
+    using namespace std::string_view_literals;
+    static constexpr std::string_view NOT_PREFIX = "no-"sv;
+    std::unordered_map<std::string_view, bool> neg_attrs = {{"in-game-purchase"sv, true}, {"violence"sv, true},      {"horror"sv, true},
+                                                            {"bad-language"sv, true},     {"sex"sv, true},           {"drugs"sv, true},
+                                                            {"gambling"sv, true},         {"discrimination"sv, true}};
+
+    size_t size = 0;
+    size_t last = 0;
+    size_t pos;
+    do {
+        pos = attributes.find('|', last);
+        std::string_view attr = attributes.substr(last, pos - last);
+        bool has_not_prefix = attr.starts_with(NOT_PREFIX);
+        attr.remove_prefix(NOT_PREFIX.size() * has_not_prefix);
+        size = attr.size() + NOT_PREFIX.size() * (neg_attrs[attr] = has_not_prefix);
+        last = pos + 1;
+    } while (pos != attributes.npos);
+
+    std::string result;
+    if (attributes.empty()) {
+        return result;
+    }
+
+    result.reserve(size + neg_attrs.size());
+    for (const auto &attr : neg_attrs) {
+        if (attr.second) {
+            result.append(NOT_PREFIX);
+        }
+
+        result.append(attr.first);
+        result.push_back('|');
+    }
+
+    result.pop_back();
+    std::cout << result << std::endl;
+    return result;
+}
 
 int main(int argc, char const *argv[]) {
     if (argc < 3) {
@@ -99,8 +136,20 @@ int main(int argc, char const *argv[]) {
     if (file.is_open()) {
         std::string line;
         while (std::getline(file, line)) {
-            size_t pos = line.find('\t');
-            attributes.emplace(line.substr(0, pos), line.substr(pos + 1));
+            std::string_view view = line;
+            size_t pos = view.find('\t');
+            view = view.substr(pos + 1);
+
+            static constexpr std::string_view TRIM_CHARS = " \n\r\t\f";
+            size_t trim_pos = view.find_first_not_of(TRIM_CHARS);
+            view.remove_prefix(trim_pos != view.npos ? trim_pos : view.size());
+            trim_pos = view.find_last_not_of(TRIM_CHARS);
+            view.remove_suffix(view.size() - (trim_pos != view.npos ? trim_pos + 1 : view.size()));
+            if (view.empty()) {
+                continue;
+            }
+
+            attributes.emplace(line.substr(0, pos), negate(line.substr(pos + 1)));
         }
         file.close();
     }

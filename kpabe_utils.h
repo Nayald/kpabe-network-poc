@@ -8,11 +8,12 @@
 constexpr uint16_t KPABE_PUB_KEY_EXT = 100;
 constexpr uint16_t KPABE_SCALAR_EXT = 101;
 
-extern bn_t Fq;
-
 // https://cplusplus.com/forum/general/226786/
 struct IMemBuf : std::streambuf {
     IMemBuf(const char *base, size_t size);
+
+    pos_type seekpos(pos_type sp, std::ios_base::openmode which = std::ios_base::in | std::ios_base::out) override;
+    pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which = std::ios_base::in | std::ios_base::out) override;
 };
 
 struct IMemStream : virtual IMemBuf, std::istream {

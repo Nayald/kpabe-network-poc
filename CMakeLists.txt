@@ -4,7 +4,7 @@ project(kpabe_proxy)
 set(CMAKE_C_COMPILER cc)
 set(CMAKE_CXX_COMPILER g++)
 set(CMAKE_CXX_STANDARD 20)
-set(CXXFLAGS "-march=x86-64-v3 -O2 -Wall -Wextra -Wno-unused-parameter")
+set(CXXFLAGS "-march=x86-64-v3 -O0 -g -Wall -Wextra -Wno-unused-parameter")
 set(CMAKE_CXX_FLAGS "${CXXFLAGS}")
 
 # Specify RELIC include directory
@@ -13,6 +13,8 @@ set(CMAKE_CXX_FLAGS "${CXXFLAGS}")
 #    /usr/local/include/lsss
 #)
 
+find_package(OpenSSL REQUIRED)
+#find_package(RELIC REQUIRED)
 find_package(nlohmann_json 3.2.0 REQUIRED)
 
 file(
@@ -40,7 +42,7 @@ add_executable(
     ${kpabe_sources}
 )
 
-target_link_libraries(proxy ssl crypto relic_s lsss gmp nlohmann_json::nlohmann_json)
+target_link_libraries(proxy OpenSSL::SSL lsss_abe relic gmp nlohmann_json::nlohmann_json)
 
 add_executable(
     server
@@ -54,7 +56,7 @@ add_executable(
     ${kpabe_sources}
 )
 
-target_link_libraries(server ssl crypto relic_s lsss gmp)
+target_link_libraries(server OpenSSL::SSL lsss_abe relic gmp)
 
 add_executable(
     authority
@@ -67,7 +69,7 @@ add_executable(
     ${kpabe_sources}
 )
 
-target_link_libraries(authority ssl crypto relic_s lsss gmp nlohmann_json::nlohmann_json)
+target_link_libraries(authority OpenSSL::SSL lsss_abe relic gmp nlohmann_json::nlohmann_json)
 
 add_executable(
     verifier
@@ -81,4 +83,5 @@ add_executable(
     ${kpabe_sources}
 )
 
-target_link_libraries(verifier ssl crypto relic_s lsss gmp nlohmann_json::nlohmann_json mnl netfilter_queue)
+target_link_libraries(verifier OpenSSL::SSL lsss_abe relic nlohmann_json::nlohmann_json mnl netfilter_queue)
+

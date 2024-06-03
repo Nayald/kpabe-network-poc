@@ -1,0 +1,36 @@
+./html/pegi3/pegi3.png	pegi3
+./html/pegi3/in-game-purchase.png	pegi3|in-game-purchase
+./html/pegi7/pegi7.png	pegi7
+./html/pegi7/in-game-purchase.png	pegi7|in-game-purchase
+./html/pegi7/violence.png	pegi7|violence
+./html/pegi7/fear.png	pegi7|horror
+./html/pegi12/pegi12.png	pegi12
+./html/pegi12/in-game-purchase.png	pegi12|in-game-purchase
+./html/pegi12/violence.png	pegi12|violence
+./html/pegi12/horror.png	pegi12|horror
+./html/pegi12/bad-language.png	pegi12|bad-language
+./html/pegi12/sex.png	pegi12|sex
+./html/pegi16/pegi16.png	pegi16
+./html/pegi16/in-game-purchase.png	pegi16|in-game-purchase
+./html/pegi16/violence.png	pegi16|violence
+./html/pegi16/horror.png	pegi16|horror
+./html/pegi16/bad-language.png	pegi16|bad-language
+./html/pegi16/sex.png	pegi16|sex
+./html/pegi16/drugs.png	pegi16|drugs
+./html/pegi18/pegi18.png	pegi18
+./html/pegi18/in-game-purchase.png	pegi18|in-game-purchase
+./html/pegi18/violence.png	pegi18|violence
+./html/pegi18/horror.png	pegi18|horror
+./html/pegi18/bad-language.png	pegi18|bad-language
+./html/pegi18/sex.png	pegi18|sex
+./html/pegi18/drugs.png	pegi18|drugs
+./html/pegi18/gambling.png	pegi18|gambling
+./html/pegi18/discrimination.png	pegi18|discrimination
+./html/cod-mw3.jpg	pegi18|in-game-purchase|violence|bad-language
+./html/fortnite.jpg	pegi12|in-game-purchase|violence
+./html/gta5.jpg	pegi18|in-game-purchase|violence|bad-language|gambling
+./html/lol.jpg	pegi12|violence
+./html/rl.jpg	pegi3
+
+
+

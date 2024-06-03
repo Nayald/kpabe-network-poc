@@ -6,8 +6,9 @@ extern "C" {
 #include <libnetfilter_queue/libnetfilter_queue.h>
 }
 
+#include <cstdint>
 #include <exception>
-#include <map>
+#include <unordered_map>
 #include <vector>
 
 #include "kpabe_server.h"
@@ -20,12 +21,20 @@ struct TcpFlow {
     uint16_t dst_port;
 };
 
-struct TcpFlowData {
-    bool validated = false;
-    std::vector<uint8_t> pending_data;
-    std::vector<uint32_t> pending_ids;
+template <>
+struct std::hash<TcpFlow> {
+    size_t operator()(const TcpFlow &v) const;
 };
 
+struct TcpFlowData {
+    int verdict;
+    uint32_t next_seq_num;
+    std::unordered_map<uint32_t, std::vector<uint8_t>> segments{};
+    std::vector<uint8_t> stream{};
+    std::vector<uint8_t> clienthello_data{};
+};
+
+bool operator==(const TcpFlow &l, const TcpFlow &r);
 bool operator<(const TcpFlow &l, const TcpFlow &r);
 
 class NetfilterException : public std::exception {
@@ -54,7 +63,7 @@ class NetfilterHandler : public SocketHandlerManager::SocketHandler {
     int queue_num;
     mnl_socket *nl = nullptr;
     unsigned int portid = 0;
-    std::pair<std::map<TcpFlow, TcpFlowData>, std::vector<std::pair<bool, uint32_t>>> flows;
+    std::pair<std::unordered_map<TcpFlow, TcpFlowData>, std::vector<std::pair<bool, uint32_t>>> flows;
 };
 
 #endif

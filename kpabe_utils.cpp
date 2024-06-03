@@ -6,6 +6,30 @@ IMemBuf::IMemBuf(const char *base, size_t size) {
     this->setg(p, p, p + size);
 }
 
+// https://stackoverflow.com/questions/41141175/how-to-implement-seekg-seekpos-on-an-in-memory-buffer
+IMemBuf::pos_type IMemBuf::seekpos(pos_type sp, std::ios_base::openmode which) {
+    return seekoff(sp - pos_type(off_type(0)), std::ios_base::beg, which);
+}
+
+// https://stackoverflow.com/questions/35066207/how-to-implement-custom-stdstreambufs-seekoff
+IMemBuf::pos_type IMemBuf::seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) {
+    auto pos = gptr();
+    if (dir == std::ios_base::cur)
+        pos += off;
+    else if (dir == std::ios_base::end)
+        pos = egptr() + off;
+    else if (dir == std::ios_base::beg)
+        pos = eback() + off;
+
+    // check bunds
+    if (pos < eback() || pos > egptr()) {
+        return pos_type(-1);
+    }
+
+    setg(eback(), pos, egptr());
+    return gptr() - eback();
+}
+
 IMemStream::IMemStream(const char *mem, size_t size) : IMemBuf(mem, size), std::istream(static_cast<std::streambuf *>(this)) {
 }
 

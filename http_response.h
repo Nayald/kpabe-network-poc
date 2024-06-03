@@ -7,28 +7,28 @@
 #include <vector>
 
 class HttpResponseHeader {
-  public:
+    public:
     HttpResponseHeader() = default;
     ~HttpResponseHeader() = default;
 
     int parse(const std::vector<char> &buffer);
 
     std::string getVersion() const;
-    void setVersion(std::string version);
-
     int getCode() const;
-    void setCode(int status);
-
     std::string getMessage() const;
+    std::optional<std::string> getHeaderValue(const std::string &name) const;
+
+    void setVersion(std::string version);
+    void setCode(int status);
     void setMessage(std::string message);
 
-    std::optional<std::string> getHeaderValue(const std::string &name) const;
-    void addOrReplaceHeader(std::string name, std::string value);
+    void addOrReplaceHeader(std::string name, const std::string &value);
+    void addOrReplaceHeader(std::string &&name, std::string &&value);
     void removeHeader(std::string name);
 
     std::string toString() const;
 
-  private:
+    private:
     std::string version;
     int code;
     std::string message;

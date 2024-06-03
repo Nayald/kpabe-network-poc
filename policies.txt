@@ -1,0 +1,13 @@
+[
+    {
+        "name": "no in-game-purchase",
+        "ip": "127.0.0.1",
+        "wl": [
+            "wikipedia.com"
+        ],
+        "bl": [
+            "facebook.com"
+        ],
+        "policy": "((pegi3 or pegi7 or pegi16 or pegi18) and (no-in-game-purchase)) or (pegi12 and no-sex)"
+    }
+]

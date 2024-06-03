@@ -1,10 +1,7 @@
 .clang-format
 proxy
 server
-html/
-attributes.txt
 authority
-policies.txt
 verifier
 
 ### CMake ###

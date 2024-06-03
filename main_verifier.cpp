@@ -26,8 +26,6 @@ void signal_handler(int signal) {
     stop = true;
 }
 
-bn_t Fq;
-
 int main(int argc, char const *argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " [queue_num]" << std::endl;

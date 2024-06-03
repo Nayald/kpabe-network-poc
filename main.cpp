@@ -31,7 +31,6 @@ void signal_handler(int signal) {
     stop = true;
 }
 
-bn_t Fq;
 int main(int argc, char const *argv[]) {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0] << "[certificate path] [private key path]" << std::endl;

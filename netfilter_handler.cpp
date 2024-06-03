@@ -1,5 +1,7 @@
 #include "netfilter_handler.h"
 
+#include <sys/socket.h>
+
 extern "C" {
 #include <arpa/inet.h>
 #include <errno.h>
@@ -27,13 +29,26 @@ extern "C" {
 #include <linux/netfilter/nfnetlink_conntrack.h>
 }
 
+#include <chrono>
+#include <cstdint>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 #include "kpabe_client.h"
 #include "kpabe_utils.h"
 #include "logger.h"
 #include "ssl_utils.h"
+
+size_t std::hash<TcpFlow>::operator()(const TcpFlow &v) const {
+    size_t result = v.src_addr >> 16;
+    result *= v.src_port;
+    return (result << 32) + v.dst_addr;
+};
+
+bool operator==(const TcpFlow &l, const TcpFlow &r) {
+    return memcmp(&l, &r, sizeof(TcpFlow)) == 0;
+}
 
 bool operator<(const TcpFlow &l, const TcpFlow &r) {
     return memcmp(&l, &r, sizeof(TcpFlow)) < 0;
@@ -117,7 +132,7 @@ bool isKpabeCompliant(const uint8_t *data, size_t size) {
     uint16_t extensions_size = *data++;
     extensions_size = (extensions_size << 8) + *data++;
     KPABE_DPVS_PUBLIC_KEY key;
-    bn_t scalar;
+    ZP scalar;
     int kpabe_status = 0;
     const uint8_t *const extension_end = data + extensions_size;
     while (data < extension_end) {
@@ -125,36 +140,37 @@ bool isKpabeCompliant(const uint8_t *data, size_t size) {
         extension_type = (extension_type << 8) + *data++;
         uint16_t extension_size = *data++;
         extension_size = (extension_size << 8) + *data++;
-        printf("found extention %u\n", extension_type);
+        logger::log(logger::DEBUG, "found extention ", extension_type);
         switch (extension_type) {
-            case 0:  // SNI extension
-                // currently contains a list of only 1 entry, so skip 3
-                // first bytes (2 bytes size + 1 byte type)
-                printf("SNI = %.*s\n", extension_size - 5, data + 5);
+            case 0:
+                // SNI extension currently contains a list of only 1 entry, so skip 3 first bytes (2 bytes size + 1 byte type)
+                // we can also skip size of the entry (2 bytes) as it is all the remaining bytes
+                logger::log(logger::DEBUG, "\tSNI = ", std::string_view(reinterpret_cast<const char *>(data) + 5, extension_size - 5));
                 break;
             case KPABE_PUB_KEY_EXT: {
-                printf("kpabe key size = %u\n", extension_size);
-                for (size_t j = 0; j < extension_size; ++j) {
-                    printf("%02X ", data[j]);
-                }
-                printf("\n");
-                IMemStream raw_data(data, extension_size);
+                logger::log(logger::DEBUG, "\tkpabe key size = ", extension_size);
+                std::vector<unsigned char> raw_data(data, data + extension_size);
                 key.deserialize(raw_data);
                 kpabe_status |= 0b01;
                 break;
             }
             case KPABE_SCALAR_EXT: {
-                printf("kpabe scalar size = %u\n", extension_size);
-                aes_cbc_decrypt(data, extension_size, KpabeClient::scalar_key, KpabeClient::scalar_key + 16,
-                                reinterpret_cast<unsigned char *>(scalar));
-                kpabe_status |= 0b10;
-                for (size_t j = 0; j < sizeof(bn_t); ++j) {
-                    printf("%02X ", reinterpret_cast<unsigned char *>(scalar)[j]);
+                logger::log(logger::DEBUG, "\tkpabe scalar size = ", extension_size);
+                ByteString raw_scalar;
+                raw_scalar.resize(extension_size);
+                int size = aes_cbc_decrypt(data, extension_size, KpabeClient::scalar_key, KpabeClient::scalar_key + 16, raw_scalar.data());
+                if (size < 0) {
+                    logger::log(logger::DEBUG, "fail to decrypt scalar");
+                    return false;
                 }
-                printf("\n");
+
+                raw_scalar.resize(size);
+                scalar.deserialize(raw_scalar);
+                kpabe_status |= 0b10;
                 break;
             }
             default:
+                logger::log(logger::DEBUG, "\tignored, size = %u\n", extension_size);
                 break;
         }
 
@@ -165,7 +181,7 @@ bool isKpabeCompliant(const uint8_t *data, size_t size) {
 }
 
 int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
-    auto *const flows = reinterpret_cast<std::pair<std::map<TcpFlow, TcpFlowData>, std::vector<std::pair<bool, uint32_t>>> *>(data);
+    auto *const flows = reinterpret_cast<std::pair<std::unordered_map<TcpFlow, TcpFlowData>, std::vector<std::pair<bool, uint32_t>>> *>(data);
 
     struct nfqnl_msg_packet_hdr *ph = NULL;
     struct nlattr *attr[NFQA_MAX + 1] = {};
@@ -270,7 +286,7 @@ int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
     if (headers_size >= plen) {
         // no data = forward
         if (tcp->syn) {
-            flows->first.insert_or_assign(tcp_flow, TcpFlowData());
+            flows->first.insert_or_assign(tcp_flow, TcpFlowData{-1, ntohl(tcp->seq) + 1});
         }
 
         if (tcp->fin) {
@@ -288,61 +304,74 @@ int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
         return MNL_CB_OK;
     }
 
-    if (it->second.validated) {
-        // if a valid handshake already occurs = forward
+    if (it->second.verdict >= 0) {
+        // if a verdict already occurs = follow verdict
+        flows->second.emplace_back(it->second.verdict, id);
+        return MNL_CB_OK;
+    }
+
+    const uint8_t *const tcp_payload = payload + headers_size;
+    const size_t tcp_payload_size = plen - headers_size;
+    if (ntohl(tcp->seq) < it->second.next_seq_num) {
+        // already seen segment
         flows->second.emplace_back(true, id);
         return MNL_CB_OK;
     }
 
-    const uint8_t *tcp_payload = payload + headers_size;
-    const size_t tcp_payload_size = plen - headers_size;
-    if (tcp_payload_size < 5 || tcp_payload[0] != 0x16) {
-        // not a TLS handshake record = drop
-        flows->second.emplace_back(false, id);
+    it->second.segments.try_emplace(ntohl(tcp->seq), tcp_payload, tcp_payload + tcp_payload_size);
+    // reconstruct tcp stream
+    auto segment_it = it->second.segments.find(it->second.next_seq_num);
+    while (segment_it != it->second.segments.end()) {
+        it->second.stream.insert(it->second.stream.end(), segment_it->second.begin(), segment_it->second.end());
+        it->second.next_seq_num += segment_it->second.size();
+        it->second.segments.erase(segment_it);
+        segment_it = it->second.segments.find(it->second.next_seq_num);
+    }
+
+    auto stream_it = it->second.stream.cbegin();
+    static constexpr uint16_t TLS_RECORD_SIZE = 5;
+    while (it->second.stream.cend() - stream_it >= TLS_RECORD_SIZE) {
+        if (*stream_it != 0x16) {
+            // only allow TLS handshake records until end of clienthello
+            if (it->second.clienthello_data.size() < 4 || it->second.clienthello_data.front() != 0x01) {
+                // stream probably contains something not expected
+                it->second = {false, 0};
+                flows->second.emplace_back(it->second.verdict, id);
+                return MNL_CB_OK;
+            }
+
+            break;
+        }
+
+        // ignore TLS version (2 Bytes)
+        uint16_t record_size = *(stream_it + 3);
+        record_size = (record_size << 8) + *(stream_it + 4);
+        if (it->second.stream.cend() - stream_it < TLS_RECORD_SIZE + record_size) {
+            // not enough data
+            it->second.stream.erase(it->second.stream.cbegin(), stream_it);  // trim read data
+            flows->second.emplace_back(true, id);
+            return MNL_CB_OK;
+        }
+
+        auto record_payload_start = stream_it + TLS_RECORD_SIZE;
+        it->second.clienthello_data.insert(it->second.clienthello_data.cend(), record_payload_start, stream_it += TLS_RECORD_SIZE + record_size);
+    }
+
+    uint32_t clienthello_size = it->second.clienthello_data[1];
+    clienthello_size = (clienthello_size << 8) + it->second.clienthello_data[2];
+    clienthello_size = (clienthello_size << 8) + it->second.clienthello_data[3];
+    static constexpr uint32_t CLIENTHELLO_HEADER_SIZE = 4;
+    if (it->second.clienthello_data.size() < CLIENTHELLO_HEADER_SIZE + clienthello_size) {
+        // not enough data
+        it->second.stream.erase(it->second.stream.cbegin(), stream_it);  // trim read data
+        flows->second.emplace_back(true, id);
         return MNL_CB_OK;
     }
 
-    // ignore TLS version (2 Bytes)
-    uint16_t record_size = tcp_payload[3];
-    record_size = (record_size << 8) + tcp_payload[4];
-    if (!it->second.pending_data.empty()) {
-        it->second.pending_data.insert(it->second.pending_data.end(), tcp_payload + 5, tcp_payload + tcp_payload_size - 5);
-        uint32_t clienthello_size = it->second.pending_data[1];
-        clienthello_size = (clienthello_size << 8) + it->second.pending_data[2];
-        clienthello_size = (clienthello_size << 8) + it->second.pending_data[3];
-        if (it->second.pending_data.size() < clienthello_size + 4) {
-            it->second.pending_ids.emplace_back(id);
-            return MNL_CB_OK;
-        }
-
-        it->second.validated = isKpabeCompliant(it->second.pending_data.data() + 4, it->second.pending_data.size() - 4);
-        it->second.pending_data.clear();
-    } else {
-        if (tcp_payload_size < 9 || tcp_payload[5] != 0x01) {
-            // not the beginning of a client hello = drop
-            flows->second.emplace_back(false, id);
-            return MNL_CB_OK;
-        }
-
-        uint32_t clienthello_size = tcp_payload[6];
-        clienthello_size = (clienthello_size << 8) + tcp_payload[7];
-        clienthello_size = (clienthello_size << 8) + tcp_payload[8];
-        if (tcp_payload_size < clienthello_size + 9) {
-            // wait for more data
-            it->second.pending_data.insert(it->second.pending_data.end(), tcp_payload + 5, tcp_payload + tcp_payload_size - 5);
-            it->second.pending_ids.emplace_back(id);
-            return MNL_CB_OK;
-        }
-
-        it->second.validated = isKpabeCompliant(tcp_payload + 9, tcp_payload_size - 9);
-    }
-
-    for (const auto pending_id : it->second.pending_ids) {
-        flows->second.emplace_back(it->second.validated, pending_id);
-    }
-
-    it->second.pending_ids.clear();
-    flows->second.emplace_back(it->second.validated, id);
+    std::cout << "got full clienthello" << std::endl;
+    // equivalent to free all as when verdict is >= 0 all other member are meaningless
+    it->second = {isKpabeCompliant(it->second.clienthello_data.data() + CLIENTHELLO_HEADER_SIZE, clienthello_size), 0};
+    flows->second.emplace_back(it->second.verdict, id);
     return MNL_CB_OK;
 }
 

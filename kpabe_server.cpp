@@ -5,9 +5,9 @@ extern "C" {
 }
 
 #include <nlohmann/json.hpp>
-#include <sstream>
 #include <string_view>
 
+#include "kpabe-content-filtering/dpvs/vector_ec.hpp"
 #include "logger.h"
 #include "ssl_utils.h"
 #include "utils.h"
@@ -96,23 +96,26 @@ int KpabeServer::handleSocketRead() {
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
                 size_t msg_size = write_buffer.size();
+
                 static constexpr std::string_view JSON_PART1 = R"({"type":"client_info","data":{"public_key":")";
                 write_buffer.insert(write_buffer.end(), JSON_PART1.begin(), JSON_PART1.end());
-                std::stringstream raw_data;
+                ByteString raw_data;
                 public_key.serialize(raw_data);
-                std::string base64 = base64_encode(raw_data.str());
+                std::string base64 = base64_encode(raw_data);
                 write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-                raw_data.str(std::string());
-                raw_data.clear();
+
                 static constexpr std::string_view JSON_PART2 = R"(","decryption_key":")";
                 write_buffer.insert(write_buffer.end(), JSON_PART2.begin(), JSON_PART2.end());
+                raw_data = ByteString();
                 it->second.decryption_key.serialize(raw_data);
-                base64 = base64_encode(raw_data.str());
+                base64 = base64_encode(raw_data);
                 write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
+
                 static constexpr std::string_view JSON_PART3 = R"(","scalar_key":")";
                 write_buffer.insert(write_buffer.end(), JSON_PART3.begin(), JSON_PART3.end());
                 base64 = std::string(base64_encode(scalar_key, sizeof(scalar_key)));
                 write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
+
                 static constexpr std::string_view JSON_PART4 = R"("}})";
                 write_buffer.insert(write_buffer.end(), JSON_PART4.begin(), JSON_PART4.end());
                 msg_size = write_buffer.size() - msg_size;
@@ -128,18 +131,19 @@ int KpabeServer::handleSocketRead() {
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
                 size_t msg_size = write_buffer.size();
+
                 static constexpr std::string_view JSON_PART1 = R"({"type":"verifier_info","data":{"public_key":")";
                 write_buffer.insert(write_buffer.end(), JSON_PART1.begin(), JSON_PART1.end());
-                std::stringstream raw_data;
+                ByteString raw_data;
                 public_key.serialize(raw_data);
-                std::string base64 = base64_encode(raw_data.str());
+                std::string base64 = base64_encode(raw_data);
                 write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-                raw_data.str(std::string());
-                raw_data.clear();
+
                 static constexpr std::string_view JSON_PART2 = R"(","scalar_key":")";
                 write_buffer.insert(write_buffer.end(), JSON_PART2.begin(), JSON_PART2.end());
                 base64 = std::string(base64_encode(scalar_key, sizeof(scalar_key)));
                 write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
+
                 static constexpr std::string_view JSON_PART3 = R"("}})";
                 write_buffer.insert(write_buffer.end(), JSON_PART3.begin(), JSON_PART3.end());
                 msg_size = write_buffer.size() - msg_size;

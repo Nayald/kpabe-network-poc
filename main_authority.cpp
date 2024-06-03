@@ -10,7 +10,6 @@ extern "C" {
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <memory>
 #include <nlohmann/json.hpp>
 #include <tuple>
 #include <unordered_map>
@@ -18,7 +17,6 @@ extern "C" {
 #include "kpabe_server.h"
 #include "kpabe_utils.h"
 #include "logger.h"
-#include "netfilter_handler.h"
 #include "socket_handler_manager.h"
 #include "socket_listener.h"
 
@@ -28,8 +26,6 @@ void signal_handler(int signal) {
     std::cerr << "receive signal " << signal << ", the program will stop" << std::endl;
     stop = true;
 }
-
-bn_t Fq;
 
 int main(int argc, char const *argv[]) {
     if (argc < 2) {
