@@ -53,20 +53,20 @@ int main(int argc, char const *argv[]) {
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
-        logger::log(logger::ERROR, "error while creating socket");
+        logger::log(logger::ERROR, "error while creating listening socket");
         return 1;
     }
 
     int res = bind(listen_sock, (sockaddr *)&listen_addr, sizeof(listen_addr));
     if (res < 0) {
-        logger::log(logger::ERROR, "error while binding socket to address -> ", std::strerror(errno));
+        logger::log(logger::ERROR, "error while binding listening socket to address -> ", std::strerror(errno));
         close(listen_sock);
         return 1;
     }
 
     res = listen(listen_sock, 15);
     if (res < 0) {
-        logger::log(logger::ERROR, "error while setting listening state -> ", std::strerror(errno));
+        logger::log(logger::ERROR, "error while setting socket to listening state -> ", std::strerror(errno));
         close(listen_sock);
         return 1;
     }

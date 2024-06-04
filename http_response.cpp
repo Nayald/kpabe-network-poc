@@ -18,9 +18,9 @@ int HttpResponseHeader::parse(const std::vector<char> &buffer) {
         return size;
     }
 
-    setVersion("HTTP/1." + std::to_string(minor_version));
-    setCode(status);
-    setMessage({msg, msg_len});
+    version = "HTTP/1." + std::to_string(minor_version);
+    code = status;
+    message = {msg, msg_len};
     this->headers.clear();
     for (size_t i = 0; i < num_headers; ++i) {
         addOrReplaceHeader({headers[i].name, headers[i].name_len}, {headers[i].value, headers[i].value_len});
@@ -92,21 +92,20 @@ std::string HttpResponseHeader::toString() const {
 
     std::string result;
     result.reserve(size + 2);
-    result.insert(result.end(), version.cbegin(), version.cend());
-    result.push_back(' ');
-    result.insert(result.end(), code.cbegin(), code.cend());
-    result.push_back(' ');
-    result.insert(result.end(), message.cbegin(), message.cend());
+    result += version;
+    result += ' ';
+    result += code;
+    result += ' ';
+    result += message;
     static constexpr std::string_view CRLF = "\r\n"sv;
-    result.insert(result.end(), CRLF.cbegin(), CRLF.cend());
+    result += CRLF;
     for (const auto &header : headers) {
         static constexpr std::string_view SEPARATOR = ": "sv;
-        result.insert(result.end(), header.first.cbegin(), header.first.cend());
-        result.insert(result.end(), SEPARATOR.cbegin(), SEPARATOR.cend());
-        result.insert(result.end(), header.second.cbegin(), header.second.cend());
-        result.insert(result.end(), CRLF.cbegin(), CRLF.cend());
+        result += header.first;
+        result += SEPARATOR;
+        result += header.second;
+        result += CRLF;
     }
 
-    result.insert(result.end(), CRLF.cbegin(), CRLF.cend());
-    return result;
+    return result += CRLF;
 }
