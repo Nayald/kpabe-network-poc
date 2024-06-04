@@ -23,10 +23,6 @@ class SocketListener : public SocketHandlerManager::SocketHandler {
         logger::log(logger::DEBUG, "(fd ", fd, ") role is SocketListener");
     }
 
-    ~SocketListener(){
-
-    };
-
     int handleSocketRead() override {
         sockaddr client_addr = {};
         socklen_t client_addrlen = sizeof(client_addr);

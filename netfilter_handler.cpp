@@ -1,5 +1,6 @@
 #include "netfilter_handler.h"
 
+#include <libnetfilter_queue/linux_nfnetlink_queue.h>
 #include <sys/socket.h>
 
 extern "C" {
@@ -183,37 +184,33 @@ bool isKpabeCompliant(const uint8_t *data, size_t size) {
 int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
     auto *const flows = reinterpret_cast<std::pair<std::unordered_map<TcpFlow, TcpFlowData>, std::vector<std::pair<bool, uint32_t>>> *>(data);
 
-    struct nfqnl_msg_packet_hdr *ph = NULL;
     struct nlattr *attr[NFQA_MAX + 1] = {};
-    uint32_t id = 0, skbinfo;
-    // struct nfgenmsg *nfg;
-    uint16_t plen;
 
     /* Parse netlink message received from the kernel, the array of
      * attributes is set up to store metadata and the actual packet.
      */
     if (nfq_nlmsg_parse(nlh, attr) < 0) {
-        perror("problems parsing");
+        logger::log(logger::ERROR, "error occurs during packet parsing");
         return MNL_CB_ERROR;
     }
 
     // nfg = reinterpret_cast<nfgenmsg *>(mnl_nlmsg_get_payload(nlh));
 
     if (attr[NFQA_PACKET_HDR] == NULL) {
-        fputs("metaheader not set\n", stderr);
+        logger::log(logger::ERROR, "metaheader not set");
         return MNL_CB_ERROR;
     }
 
     /* Access packet metadata, which provides unique packet ID, hook number
      * and ethertype. See struct nfqnl_msg_packet_hdr for details.
      */
-    ph = reinterpret_cast<nfqnl_msg_packet_hdr *>(mnl_attr_get_payload(attr[NFQA_PACKET_HDR]));
+    const nfqnl_msg_packet_hdr *const ph = reinterpret_cast<nfqnl_msg_packet_hdr *>(mnl_attr_get_payload(attr[NFQA_PACKET_HDR]));
 
     /* Access actual packet data length. */
-    plen = mnl_attr_get_payload_len(attr[NFQA_PAYLOAD]);
+    const uint16_t plen = mnl_attr_get_payload_len(attr[NFQA_PAYLOAD]);
 
     /* Access actual packet data */
-    uint8_t *payload = reinterpret_cast<uint8_t *>(mnl_attr_get_payload(attr[NFQA_PAYLOAD]));
+    const uint8_t *const payload = reinterpret_cast<uint8_t *>(mnl_attr_get_payload(attr[NFQA_PAYLOAD]));
 
     /* Fetch metadata flags, possible flags values are:
      *
@@ -225,62 +222,29 @@ int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
      *	Not the original packet received from the wire. Kernel has
      *	aggregated several packets into one single packet via GSO.
      */
-    skbinfo = attr[NFQA_SKB_INFO] ? ntohl(mnl_attr_get_u32(attr[NFQA_SKB_INFO])) : 0;
+    const uint32_t skbinfo = attr[NFQA_SKB_INFO] ? ntohl(mnl_attr_get_u32(attr[NFQA_SKB_INFO])) : 0;
 
     /* Kernel has truncated the packet, fetch original packet length. */
     if (attr[NFQA_CAP_LEN]) {
         uint32_t orig_len = ntohl(mnl_attr_get_u32(attr[NFQA_CAP_LEN]));
-        if (orig_len != plen)
-            printf("truncated ");
-    }
-
-    if (skbinfo & NFQA_SKB_GSO)
-        printf("GSO ");
-
-    id = ntohl(ph->packet_id);
-    printf("packet received (id=%u hw=0x%04x hook=%u, payload len %u", id, ntohs(ph->hw_protocol), ph->hook, plen);
-
-    /* Fetch ethernet destination address. */
-    if (attr[NFQA_HWADDR]) {
-        struct nfqnl_msg_packet_hw *hw = reinterpret_cast<nfqnl_msg_packet_hw *>(mnl_attr_get_payload(attr[NFQA_HWADDR]));
-        unsigned int hwlen = ntohs(hw->hw_addrlen);
-        const unsigned char *addr = hw->hw_addr;
-        unsigned int i;
-
-        printf(", hwaddr %02x", addr[0]);
-        for (i = 1; i < hwlen; i++) {
-            if (i >= sizeof(hw->hw_addr)) {
-                printf("[truncated]");
-                break;
-            }
-            printf(":%02x", (unsigned char)addr[i]);
+        if (orig_len != plen) {
+            logger::log(logger::WARNING, "received packet is truncated");
         }
-
-        printf(" len %u", hwlen);
     }
 
-    /*
-     * ip/tcp checksums are not yet valid, e.g. due to GRO/GSO.
-     * The application should behave as if the checksums are correct.
-     *
-     * If these packets are later forwarded/sent out, the checksums will
-     * be corrected by kernel/hardware.
-     */
-    if (skbinfo & NFQA_SKB_CSUMNOTREADY)
-        printf(", checksum not ready");
-    puts(")");
+    if (skbinfo & NFQA_SKB_GSO) {
+        logger::log(logger::INFO, "received packet is an aggregate of multiple packets (GSO)");
+    }
 
-    const auto *ip = reinterpret_cast<iphdr *>(payload);
+    const uint32_t id = ntohl(ph->packet_id);
+    const auto *const ip = reinterpret_cast<const iphdr *>(payload);
     if (ip->protocol != IPPROTO_TCP) {
         // only handle tcp = forward
         flows->second.emplace_back(true, id);
         return MNL_CB_OK;
     }
 
-    const auto *tcp = reinterpret_cast<tcphdr *>(payload + ip->ihl * 4);
-    printf("%u.%u.%u.%u:%u -> %u.%u.%u.%u:%u, seq num = %u\n", ip->saddr & 0xFF, (ip->saddr >> 8) & 0xFF, (ip->saddr >> 16) & 0xFF,
-           (ip->saddr >> 24) & 0xFF, htons(tcp->source), ip->daddr & 0xFF, (ip->daddr >> 8) & 0xFF, (ip->daddr >> 16) & 0xFF,
-           (ip->daddr >> 24) & 0xFF, htons(tcp->dest), htonl(tcp->seq));
+    const auto *const tcp = reinterpret_cast<const tcphdr *>(payload + ip->ihl * 4);
     const TcpFlow tcp_flow = {ip->saddr, ip->daddr, tcp->source, tcp->dest};
     const size_t headers_size = ip->ihl * 4 + tcp->doff * 4;
     if (headers_size >= plen) {
@@ -368,9 +332,13 @@ int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
         return MNL_CB_OK;
     }
 
-    std::cout << "got full clienthello" << std::endl;
     // equivalent to free all as when verdict is >= 0 all other member are meaningless
+    const auto start = std::chrono::steady_clock::now();
     it->second = {isKpabeCompliant(it->second.clienthello_data.data() + CLIENTHELLO_HEADER_SIZE, clienthello_size), 0};
+    logger::log(logger::INFO, "verification took ", std::chrono::steady_clock::now() - start);
+    logger::log(logger::INFO, ip->saddr & 0xFF, '.', (ip->saddr >> 8) & 0xFF, '.', (ip->saddr >> 16) & 0xFF, '.', (ip->saddr >> 24) & 0xFF, ':',
+                htons(tcp->source), " -> ", ip->daddr & 0xFF, '.', (ip->daddr >> 8) & 0xFF, '.', (ip->daddr >> 16) & 0xFF, '.',
+                (ip->daddr >> 24) & 0xFF, ':', htons(tcp->dest), " clienthello ", it->second.verdict ? "is" : "isn't", " compliant");
     flows->second.emplace_back(it->second.verdict, id);
     return MNL_CB_OK;
 }
@@ -399,7 +367,7 @@ int NetfilterHandler::handleSocketRead() {
 int NetfilterHandler::handleSocketWrite() {
     for (const auto &[verdict, id] : flows.second) {
         nlmsghdr *msg = nfq_nlmsg_put(write_buffer.data(), NFQNL_MSG_VERDICT, queue_num);
-        printf("id: %d, verdict: %d\n", id, verdict);
+        // printf("id: %d, verdict: %d\n", id, verdict);
         nfq_nlmsg_verdict_put(msg, id, verdict ? NF_ACCEPT : NF_DROP);
 
         /* example to set the connmark. First, start NFQA_CT section: */
