@@ -39,9 +39,6 @@ extern "C" {
 
 extern std::unordered_map<std::string, std::string> attributes;
 
-static const std::set<std::string> GLOBAL_ATTIBUTE_SET = {"in-game-purchase", "violence",      "horror", "bad-language", "sex", "drugs",
-                                                          "gambling",         "discrimination"};
-
 HttpsServer::HttpsServer(SocketHandlerManager &manager, int fd, std::string addr) : SocketHandler(manager, fd, std::move(addr)) {
     logger::log(logger::DEBUG, "(fd ", fd, ") role is HttpsServer");
 }
@@ -340,7 +337,10 @@ int HttpsServer::handleHttpRequest() {
                     aes_key_ciphertext.serialize(aes_key_raw);
                     header += "Content-Encoding: aes_128_cbc/kp-abe\r\nDecryption-Key: " + base64_encode(aes_key_raw) + "\r\n";
                     // due to current size restriction -> first half is aes key and second half is iv
+                    const auto start = std::chrono::steady_clock::now();
                     body.resize(aes_cbc_encrypt(body.data(), body_len, aes_key, aes_key + 16, body.data()));
+                    logger::log(logger::INFO, "(fd ", fd, ") AES encryption took ",
+                                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
                 } else {
                     logger::log(logger::ERROR, "(fd ", fd, ") something go wrong with kpabe encryption for ", std::string_view(path, path_len));
                     body.resize(body_len);

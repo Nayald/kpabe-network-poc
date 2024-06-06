@@ -1,5 +1,7 @@
 #include "http_proxy_server.h"
 
+#include <chrono>
+
 extern "C" {
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -24,6 +26,7 @@ extern "C" {
 #include <charconv>
 #include <cstring>
 #include <string_view>
+#include <unordered_map>
 
 #include "http_client.h"
 #include "logger.h"
@@ -153,26 +156,41 @@ bool HttpProxyServer::socketWantWrite() const {
 }
 
 static int generate_certificate_callback(SSL *ssl, void *arg) {
+    static std::unordered_map<std::string, std::pair<X509 *, EVP_PKEY *>> cache;
     if (!arg) {
         return 0;
     }
 
     const size_t pos = static_cast<std::string *>(arg)->find(':');
     const std::string domain_name = static_cast<std::string *>(arg)->substr(0, pos);
+    auto [it, inserted] = cache.try_emplace(domain_name, nullptr, nullptr);
+    if (!inserted && it->second.first) {
+        if (time_t next_day = std::time(NULL) + 24 * 3600; X509_cmp_time(X509_get_notAfter(it->second.first), &next_day) > 0) {
+            logger::log(logger::INFO, "reuse certificate in cache for ", domain_name);
+            SSL_use_certificate(ssl, it->second.first);
+            SSL_use_PrivateKey(ssl, it->second.second);
+            return 1;
+        }
+
+        X509_free(it->second.first);
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    it->second.first = X509_new();
+    if (!it->second.second) {
+        it->second.second = EVP_RSA_gen(2048);
+    }
 
     bool success = false;
-    X509 *cert = X509_new();
-    EVP_PKEY *pkey = EVP_RSA_gen(2048);
-
     do {
-        if (!cert || !pkey) {
+        if (!it->second.first || !it->second.second) {
             break;
         }
 
-        X509_set_version(cert, 2 /*= v3*/);
-        X509_set_pubkey(cert, pkey);
-        X509_set_issuer_name(cert, X509_get_subject_name(HttpProxyServer::ca_cert));
-        X509_NAME *const subject = X509_get_subject_name(cert);
+        X509_set_version(it->second.first, 2 /*= v3*/);
+        X509_set_pubkey(it->second.first, it->second.second);
+        X509_set_issuer_name(it->second.first, X509_get_subject_name(HttpProxyServer::ca_cert));
+        X509_NAME *const subject = X509_get_subject_name(it->second.first);
         /*X509_NAME_add_entry_by_txt(csr_subject, "C", MBSTRING_ASC, (const unsigned char *)"FR", -1, -1, 0);
           X509_NAME_add_entry_by_txt(csr_subject, "ST", MBSTRING_ASC, (const unsigned char *)"Lorraine", -1, -1, 0);
           X509_NAME_add_entry_by_txt(csr_subject, "L", MBSTRING_ASC, (const unsigned char *)"Nancy", -1, -1, 0);
@@ -199,7 +217,7 @@ static int generate_certificate_callback(SSL *ssl, void *arg) {
           GENERAL_NAME_set0_value(name, GEN_DNS, ia5);
           sk_GENERAL_NAME_push(alt_names, name);*/
 
-        X509_add1_ext_i2d(cert, NID_subject_alt_name, alt_names, 0, X509V3_ADD_DEFAULT);
+        X509_add1_ext_i2d(it->second.first, NID_subject_alt_name, alt_names, 0, X509V3_ADD_DEFAULT);
         sk_GENERAL_NAME_pop_free(alt_names, GENERAL_NAME_free);
 
         // gen serial number
@@ -207,28 +225,31 @@ static int generate_certificate_callback(SSL *ssl, void *arg) {
         RAND_bytes(bytes, sizeof(bytes));
         BIGNUM *bn = BN_bin2bn(bytes, sizeof(bytes), NULL);
         ASN1_INTEGER *serial = BN_to_ASN1_INTEGER(bn, NULL);
-        X509_set_serialNumber(cert, serial);
+        X509_set_serialNumber(it->second.first, serial);
         ASN1_INTEGER_free(serial);
         BN_free(bn);
 
         // set validity period
-        X509_gmtime_adj(X509_get_notBefore(cert), 0);
-        X509_gmtime_adj(X509_get_notAfter(cert), 60 * 60 * 24 * 365 /*1 year*/);
-        if (!X509_sign(cert, HttpProxyServer::ca_pkey, EVP_sha256())) {
+        X509_gmtime_adj(X509_get_notBefore(it->second.first), 0);
+        X509_gmtime_adj(X509_get_notAfter(it->second.first), 60 * 60 * 24 * 365 /*1 year*/);
+        if (!X509_sign(it->second.first, HttpProxyServer::ca_pkey, EVP_sha256())) {
             break;
         }
         success = true;
     } while (false);
 
     if (!success) {
-        EVP_PKEY_free(pkey);
-        X509_free(cert);
+        // EVP_PKEY_free(pkey);
+        X509_free(it->second.first);
+        it->second.first = nullptr;
         return 0;
     }
 
+    logger::log(logger::INFO, "forging certificate for ", domain_name, " took ",
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
     // X509_print_fp(stderr, cert);
-    SSL_use_certificate(ssl, cert);
-    SSL_use_PrivateKey(ssl, pkey);
+    SSL_use_certificate(ssl, it->second.first);
+    SSL_use_PrivateKey(ssl, it->second.second);
     return 1;
 }
 

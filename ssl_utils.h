@@ -6,8 +6,6 @@
 #include <vector>
 
 // from https://wiki.openssl.org/index.php/EVP_Symmetric_Encryption_and_Decryption
-void handleErrors(void);
-
 int aes_cbc_encrypt(const unsigned char *plaintext, int plaintext_len, unsigned char *key, unsigned char *iv, unsigned char *ciphertext);
 int aes_cbc_decrypt(const unsigned char *ciphertext, int ciphertext_len, unsigned char *key, unsigned char *iv, unsigned char *plaintext);
 
