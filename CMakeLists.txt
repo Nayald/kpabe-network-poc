@@ -4,7 +4,7 @@ project(kpabe_proxy)
 set(CMAKE_C_COMPILER cc)
 set(CMAKE_CXX_COMPILER g++)
 set(CMAKE_CXX_STANDARD 20)
-set(CXXFLAGS "-march=x86-64-v3 -O0 -g -Wall -Wextra -Wno-unused-parameter")
+set(CXXFLAGS "-march=x86-64-v3 -O2 -Wall -Wextra -Wno-unused-parameter")
 set(CMAKE_CXX_FLAGS "${CXXFLAGS}")
 
 # Specify RELIC include directory

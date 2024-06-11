@@ -15,8 +15,6 @@ extern "C" {
 
 #include <cerrno>
 #include <charconv>
-#include <chrono>
-#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -28,7 +26,6 @@ extern "C" {
 #include "logger.h"
 #include "socket_handler_manager.h"
 #include "ssl_utils.h"
-#include "utils.h"
 
 // using sslData = std::pair<std::vector<unsigned char>, std::vector<unsigned
 // char>>;
@@ -259,95 +256,71 @@ int HttpClient::handleHttpResponseHeader() {
     }
 
     read_buffer.erase(read_buffer.begin(), read_buffer.begin() + size);
-    if (const auto v = response_header.getHeaderValue("content-length")) {
-        logger::log(logger::DEBUG, "(fd ", fd, ") response body has a size of ", remaining_bytes);
-        remaining_bytes = std::stoi(v.value());
-    } else {
-        logger::log(logger::DEBUG, "(fd ", fd, ") response body is chunked");
-        remaining_bytes = -1;
-        is_chunked_body = true;
-    }
 
-    static constexpr std::string_view TRIM_CHARS = " \n\r\t\f";
-    if (const auto v = response_header.getHeaderValue("transfer-encoding")) {
-        size_t last = 0;
-        size_t pos = 0;
-        do {
-            pos = v->find(',', last);
-            std::string_view encoding(v->data() + last, std::min(pos, v->size()) - last);
+    do {
+        using namespace std::string_view_literals;
+        static constexpr std::string_view TRIM_CHARS = " \n\r\t\f"sv;
+        if (const auto v = response_header.getHeaderValue("content-length")) {
+            logger::log(logger::DEBUG, "(fd ", fd, ") response body has a size of ", remaining_bytes);
+            remaining_bytes = std::stoi(v.value());
+        } else if (const auto v = response_header.getHeaderValue("transfer-encoding")) {
+            // only handle chunked alone at the moment
+            std::string_view encoding = *v;
             size_t trim_pos = encoding.find_first_not_of(TRIM_CHARS);
             encoding.remove_prefix(trim_pos != v->npos ? trim_pos : encoding.size());
             trim_pos = encoding.find_last_not_of(TRIM_CHARS);
             encoding.remove_suffix(encoding.size() - (trim_pos != v->npos ? trim_pos + 1 : encoding.size()));
-            switch (hash(encoding)) {
-                default:
-                    logger::log(logger::WARNING, "(fd ", fd, ") unknown ", encoding, " encoding");
-                    break;
+            if (encoding != "chunked"sv) {
+                logger::log(logger::WARNING, "(fd ", fd, ") unknown transfer-encoding: ", encoding);
+                remaining_bytes = -1;
+                break;
             }
 
-            last = pos + 1;
-        } while (pos != v->npos);
+            logger::log(logger::DEBUG, "(fd ", fd, ") response body is chunked");
+            remaining_bytes = -1;
+            is_chunked_body = true;
+            // response_header.removeHeader("transfer-encoding");
+        } else {
+            logger::log(logger::WARNING, "(fd", fd, ") no hint to determine end of response, expect socket close from server to end");
+            remaining_bytes = -1;
+        }
 
-        response_header.removeHeader("transfer-encoding");
-    }
-
-    if (const auto v = response_header.getHeaderValue("content-encoding")) {
-        std::vector<std::string_view> encodings;
-        size_t last = 0;
-        size_t pos = 0;
-        do {
-            pos = v->find(',', last);
-            auto &encoding = encodings.emplace_back(v->data() + last, std::min(pos, v->size()) - last);
-            size_t &&trim_pos = encoding.find_first_not_of(TRIM_CHARS);
+        if (const auto v = response_header.getHeaderValue("content-encoding")) {
+            std::string_view encoding = *v;
+            size_t trim_pos = encoding.find_first_not_of(TRIM_CHARS);
             encoding.remove_prefix(trim_pos != v->npos ? trim_pos : encoding.size());
             trim_pos = encoding.find_last_not_of(TRIM_CHARS);
             encoding.remove_suffix(encoding.size() - (trim_pos != v->npos ? trim_pos + 1 : encoding.size()));
-            last = pos + 1;
-        } while (pos != v->npos);
+            if (encoding != "aes_128_cbc/kp-abe"sv) {
+                logger::log(logger::WARNING, "(fd ", fd, ") no capability for content-encoding: ", encoding, " -> forward");
+                break;
+            }
 
-        if (const auto kpabe_encoding = std::find(encodings.begin(), encodings.end(), "aes_128_cbc/kp-abe"); kpabe_encoding != encodings.end()) {
-            // undo others encodings up to kp-abe
-            auto encoding = encodings.begin();
-            while (encoding != kpabe_encoding) {
-                switch (hash(*encoding)) {
-                    default:
-                        logger::log(logger::WARNING, "(fd ", fd, ") unknown ", *encoding, " encoding");
-                        break;
+            if (const auto encrypted_dec_key_base64 = response_header.getHeaderValue("decryption-key")) {
+                const auto start = std::chrono::steady_clock::now();
+                std::vector<unsigned char> encrypted_dec_key = base64_decode(*encrypted_dec_key_base64);
+                KPABE_DPVS_CIPHERTEXT dec_key_ciphertext;
+                dec_key_ciphertext.deserialize(encrypted_dec_key);
+                dec_key_ciphertext.remove_scalar(scalar);
+                dec_key.resize(32);
+                const bool success = dec_key_ciphertext.decrypt(dec_key.data(), kpabe_dec_key);
+                if (success) {
+                    kpabe_method = AES_128_CBC;
+                } else {
+                    response_header.setCode(403);
+                    response_header.setMessage("Forbidden");
                 }
 
-                ++encoding;
-            }
-        }
-    }
-
-    if (const auto v = response_header.getHeaderValue("content-encoding"); v && v->find("aes_128_cbc/kp-abe") != std::string::npos) {
-        logger::log(logger::DEBUG, "(fd ", fd, ") response body is encrypted with KP-ABE");
-        const auto start = std::chrono::steady_clock::now();
-        if (const auto encrypted_aes_key_base64 = response_header.getHeaderValue("decryption-key"); encrypted_aes_key_base64.has_value()) {
-            std::vector<unsigned char> encrypted_aes_key = base64_decode(encrypted_aes_key_base64.value());
-            KPABE_DPVS_CIPHERTEXT aes_key_ciphertext;
-            aes_key_ciphertext.deserialize(encrypted_aes_key);
-            aes_key_ciphertext.remove_scalar(scalar);
-            dec_key.resize(32);
-            if (aes_key_ciphertext.decrypt(dec_key.data(), kpabe_dec_key)) {
-                uint32_t x = *(uint32_t *)dec_key.data();
-                std::cerr << x << std::endl;
-
-                kpabe_method = AES_128_CBC;
+                logger::log(logger::INFO, "(fd ", fd, ") KP-ABE decryption took ",
+                            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start), ", result = ", success);
+                response_header.removeHeader("decryption-key");
             } else {
-                logger::log(logger::WARNING, "(fd ", fd, ") Unable to decrypt the body key");
-                response_header.setCode(403);
-                response_header.setMessage("Forbidden");
+                logger::log(logger::WARNING, "(fd ", fd, ") response body does not contain any decryption key");
+                response_header.setCode(422);
+                response_header.setMessage("Unprocessable entity");
             }
-        } else {
-            logger::log(logger::WARNING, "(fd ", fd, ") response body does not contain any decryption key");
-            response_header.setCode(422);
-            response_header.setMessage("Unprocessable entity");
         }
-
-        logger::log(logger::INFO, "(fd ", fd, ") KP-ABE decryption took ",
-                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
-    }
+    } while (false);
 
     auto p = peer.lock();
     if (!p) {
@@ -407,9 +380,10 @@ int HttpClient::handleHttpChunkedBody() {
         return 0;
     }
 
-    static constexpr std::string_view CRLF = "\r\n";
-    size_t chunk_inner_size;
-    size_t chunk_total_size;
+    using namespace std::string_view_literals;
+    static constexpr std::string_view CRLF = "\r\n"sv;
+    size_t chunk_inner_size = 0;
+    size_t chunk_total_size = 0;
     do {
         auto chunk_header_limit = std::string_view(read_buffer.data(), read_buffer.size()).find(CRLF);
         if (chunk_header_limit == std::string_view::npos) {

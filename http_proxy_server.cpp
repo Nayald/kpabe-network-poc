@@ -75,7 +75,7 @@ int HttpProxyServer::handleSocketRead() {
     }
 
     int size;
-    if (is_over_ssl) {
+    if (is_over_ssl) [[likely]] {
         if (int ret = handleSslHandshake(); ret <= 0) {
             return ret * -1;
         }
