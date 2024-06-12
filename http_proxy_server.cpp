@@ -163,8 +163,8 @@ static int generate_certificate_callback(SSL *ssl, void *arg) {
 
     const size_t pos = static_cast<std::string *>(arg)->find(':');
     const std::string domain_name = static_cast<std::string *>(arg)->substr(0, pos);
-    auto [it, inserted] = cache.try_emplace(domain_name, nullptr, nullptr);
-    if (!inserted && it->second.first) {
+    auto [it, inserted] = cache.try_emplace(domain_name);
+    if (it->second.first) {
         if (time_t next_day = std::time(NULL) + 24 * 3600; X509_cmp_time(X509_get_notAfter(it->second.first), &next_day) > 0) {
             logger::log(logger::INFO, "reuse certificate in cache for ", domain_name);
             SSL_use_certificate(ssl, it->second.first);
@@ -331,45 +331,71 @@ int HttpProxyServer::handleHttpRequestHeader() {
 }
 
 std::shared_ptr<SocketHandlerManager::SocketHandler> HttpProxyServer::generatePeer() {
+    static constexpr std::chrono::minutes TIMEOUT{5};
+    static std::unordered_map<std::string, std::pair<addrinfo *, std::chrono::steady_clock::time_point>> cache;
+
     const size_t pos = server_domain.find(':');
-    const std::string hostname = server_domain.substr(0, pos);
+    const std::string domain_name = server_domain.substr(0, pos);
     const std::string port = server_domain.substr(pos + 1);
-    addrinfo hints = {};
-    // hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    addrinfo *result;
-    if (getaddrinfo(hostname.c_str(), port.c_str(), &hints, &result) != 0) {
-        logger::log(logger::ERROR, "(fd ", fd, ") failed to get ip address of ", server_domain);
-        return nullptr;
+    auto [it, inserted] = cache.try_emplace(domain_name);
+    if (const auto now = std::chrono::steady_clock::now(); it->second.second + TIMEOUT < now) {
+        freeaddrinfo(it->second.first);
+        addrinfo hints = {};
+        // hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        if (getaddrinfo(domain_name.c_str(), port.c_str(), &hints, &it->second.first) != 0) {
+            logger::log(logger::ERROR, "(fd ", fd, ") failed to get ip address of ", server_domain);
+            return nullptr;
+        }
+
+        it->second.second = now;
+        logger::log(logger::INFO, "(fd ", fd, ") name resolution for ", domain_name, " took ",
+                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now));
+    } else {
+        logger::log(logger::INFO, "(fd ", fd, ") reuse addrinfo in cache for ", domain_name);
     }
 
-    int client_fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (client_fd < 0) {
-        logger::log(logger::ERROR, "(fd ", fd, ") error while creating client socket -> ", std::strerror(errno));
-        return nullptr;
-    }
+    int client_fd = -1;
+    int status = -1;
+    for (auto res = it->second.first; res != nullptr; res = res->ai_next) {
+        client_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (client_fd < 0) {
+            logger::log(logger::ERROR, "(fd ", fd, ") error while creating client socket -> ", std::strerror(errno));
+            return nullptr;
+        }
 
-    if (connect(client_fd, result->ai_addr, result->ai_addrlen) < 0) {
+        status = connect(client_fd, res->ai_addr, res->ai_addrlen);
+        if (status == 0) {
+            break;
+        }
+
         char addr[INET6_ADDRSTRLEN];
-        switch (result->ai_family) {
+        switch (res->ai_family) {
             case AF_INET:
                 logger::log(logger::ERROR, "(fd ", fd, ") client socket failed to connect to ", server_domain, " (",
-                            inet_ntop(AF_INET, &((sockaddr_in *)result->ai_addr)->sin_addr, addr, sizeof(addr)), ')');
+                            inet_ntop(AF_INET, &((sockaddr_in *)res->ai_addr)->sin_addr, addr, sizeof(addr)), ") -> ", std::strerror(errno));
                 break;
             case AF_INET6:
                 logger::log(logger::ERROR, "(fd ", fd, ") client socket failed to connect to ", server_domain, " (",
-                            inet_ntop(AF_INET6, &((sockaddr_in6 *)result->ai_addr)->sin6_addr, addr, sizeof(addr)), ')');
+                            inet_ntop(AF_INET6, &((sockaddr_in6 *)res->ai_addr)->sin6_addr, addr, sizeof(addr)), ") -> ", std::strerror(errno));
                 break;
             default:
-                logger::log(logger::ERROR, "(fd ", fd, ") client socket failed to connect with an address that is neither ipv4 nor ipv6");
+                logger::log(logger::ERROR, "(fd ", fd, ") client socket failed to connect with an address that is neither ipv4 nor ipv6 -> ", ") -> ",
+                            std::strerror(errno));
                 break;
         }
-        freeaddrinfo(result);
+
+        res = res->ai_next;
+        continue;
+    }
+
+    if (client_fd < 0 || status < 0) {
+        freeaddrinfo(it->second.first);
+        cache.erase(it);
         return nullptr;
     }
 
-    freeaddrinfo(result);
     if (fcntl(client_fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) < 0) {
         logger::log(logger::WARNING, "(fd ", fd, ") unable to set client socket non-blocking state -> ", std::strerror(errno));
     }

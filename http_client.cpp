@@ -296,6 +296,7 @@ int HttpClient::handleHttpResponseHeader() {
                 break;
             }
 
+            response_header.removeHeader("content-encoding");
             if (const auto encrypted_dec_key_base64 = response_header.getHeaderValue("decryption-key")) {
                 const auto start = std::chrono::steady_clock::now();
                 std::vector<unsigned char> encrypted_dec_key = base64_decode(*encrypted_dec_key_base64);

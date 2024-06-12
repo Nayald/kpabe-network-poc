@@ -335,7 +335,7 @@ int netfilterCallback(const struct nlmsghdr *nlh, void *data) {
     // equivalent to free all as when verdict is >= 0 all other member are meaningless
     const auto start = std::chrono::steady_clock::now();
     it->second = {isKpabeCompliant(it->second.clienthello_data.data() + CLIENTHELLO_HEADER_SIZE, clienthello_size), 0};
-    logger::log(logger::INFO, "verification took ", std::chrono::steady_clock::now() - start);
+    logger::log(logger::INFO, "verification took ", std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
     logger::log(logger::INFO, ip->saddr & 0xFF, '.', (ip->saddr >> 8) & 0xFF, '.', (ip->saddr >> 16) & 0xFF, '.', (ip->saddr >> 24) & 0xFF, ':',
                 htons(tcp->source), " -> ", ip->daddr & 0xFF, '.', (ip->daddr >> 8) & 0xFF, '.', (ip->daddr >> 16) & 0xFF, '.',
                 (ip->daddr >> 24) & 0xFF, ':', htons(tcp->dest), " clienthello ", it->second.verdict ? "is" : "isn't", " compliant");

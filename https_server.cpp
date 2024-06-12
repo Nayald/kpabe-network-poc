@@ -295,7 +295,7 @@ int HttpsServer::handleHttpRequest() {
                 "Server: KP-ABE Simple Webserver\r\n"
                 "Connection: Keep-Alive\r\n"
                 "Content-Type: ";
-            const size_t extension_start = p.find_last_of('.', path_end);
+            const size_t extension_start = std::min(p.find_last_of('.', path_end), path_end);
             switch (hash(p.substr(extension_start, path_end - extension_start))) {
                 using namespace std::string_view_literals;
                 case hash(".html"sv):
