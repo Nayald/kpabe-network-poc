@@ -235,6 +235,7 @@ static int generate_certificate_callback(SSL *ssl, void *arg) {
         if (!X509_sign(it->second.first, HttpProxyServer::ca_pkey, EVP_sha256())) {
             break;
         }
+
         success = true;
     } while (false);
 
@@ -313,16 +314,17 @@ int HttpProxyServer::handleHttpRequestHeader() {
         return 1;
     }
 
-    static constexpr std::string_view CONNECT = "CONNECT";
+    using namespace std::string_view_literals;
+    static constexpr std::string_view CONNECT = "CONNECT"sv;
     if (!iequals(std::string_view(method, method_len), CONNECT)) {
-        static constexpr std::string_view NOT_IMPLEMENTED = "HTTP/1.1 501 Not Implemented\r\nProxy-agent: KP-ABE Fake Proxy\r\n\r\n";
+        static constexpr std::string_view NOT_IMPLEMENTED = "HTTP/1.1 501 Not Implemented\r\nProxy-agent: KP-ABE Fake Proxy\r\n\r\n"sv;
         socketWrite(NOT_IMPLEMENTED);
         return 1;
     }
 
     server_domain = std::string(path, path_len);
     logger::log(logger::INFO, "(fd ", fd, ") ", remote_address, " want to connect to ", server_domain);
-    static constexpr std::string_view ESTABLISHED = "HTTP/1.1 200 Connection Established\r\nProxy-agent: KP-ABE Fake Proxy\r\n\r\n";
+    static constexpr std::string_view ESTABLISHED = "HTTP/1.1 200 Connection Established\r\nProxy-agent: KP-ABE Fake Proxy\r\n\r\n"sv;
     socketWrite(ESTABLISHED);
     // CONNECT is not expected to have a body
     read_buffer = {};
@@ -331,14 +333,14 @@ int HttpProxyServer::handleHttpRequestHeader() {
 }
 
 std::shared_ptr<SocketHandlerManager::SocketHandler> HttpProxyServer::generatePeer() {
-    static constexpr std::chrono::minutes TIMEOUT{5};
+    static constexpr std::chrono::minutes VALIDITY_PERIOD{5};
     static std::unordered_map<std::string, std::pair<addrinfo *, std::chrono::steady_clock::time_point>> cache;
 
     const size_t pos = server_domain.find(':');
     const std::string domain_name = server_domain.substr(0, pos);
     const std::string port = server_domain.substr(pos + 1);
     auto [it, inserted] = cache.try_emplace(domain_name);
-    if (const auto now = std::chrono::steady_clock::now(); it->second.second + TIMEOUT < now) {
+    if (const auto now = std::chrono::steady_clock::now(); it->second.second + VALIDITY_PERIOD < now) {
         freeaddrinfo(it->second.first);
         addrinfo hints = {};
         // hints.ai_family = AF_INET;

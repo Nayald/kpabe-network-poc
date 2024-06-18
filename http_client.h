@@ -21,7 +21,7 @@ class HttpClient : public SocketHandlerManager::SocketHandler {
 
     explicit HttpClient(SocketHandlerManager &manager, int fd, std::string remote_address, const std::shared_ptr<SocketHandler> &peer,
                         bool is_over_ssl);
-    ~HttpClient();
+    ~HttpClient() override;
 
     int handleSocketRead() override;
     int handleSocketWrite() override;

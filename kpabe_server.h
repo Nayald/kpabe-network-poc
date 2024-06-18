@@ -24,7 +24,7 @@ class KpabeServer : public SocketHandlerManager::SocketHandler {
     inline static std::unordered_map<std::string, KpabeClientInfo> client_infos;
 
     explicit KpabeServer(SocketHandlerManager &manager, int fd, std::string remote_addr);
-    ~KpabeServer();
+    ~KpabeServer() override;
 
     int handleSocketRead() override;
     int handleSocketWrite() override;

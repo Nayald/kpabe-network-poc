@@ -15,6 +15,7 @@ extern "C" {
 
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -179,6 +180,7 @@ int HttpClient::handleSslHandshake() {
             logger::log(logger::WARNING, "(fd ", fd, ") failed to set SNI");
         }
 
+        const auto start = std::chrono::steady_clock::now();
         auto *const data = new SslData;
         const auto randomized_public_key_info = KpabeClient::public_key.randomize();
         randomized_public_key_info.first.serialize(data->first);
@@ -192,6 +194,8 @@ int HttpClient::handleSslHandshake() {
         SSL_set_app_data(ssl, data);
         // copy in case key change during the session
         kpabe_dec_key = KpabeClient::decryption_key;
+        logger::log(logger::INFO, "(fd ", fd, ") KP-ABE public key randomization took ",
+                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
     }
 
     if (!SSL_is_init_finished(ssl)) {

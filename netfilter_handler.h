@@ -52,7 +52,7 @@ class NetfilterException : public std::exception {
 class NetfilterHandler : public SocketHandlerManager::SocketHandler {
     public:
     explicit NetfilterHandler(SocketHandlerManager &manager, int queue_num);
-    ~NetfilterHandler();
+    ~NetfilterHandler() override;
 
     int handleSocketRead() override;
     int handleSocketWrite() override;

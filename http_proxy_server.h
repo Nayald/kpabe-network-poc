@@ -18,7 +18,7 @@ class HttpProxyServer : public SocketHandlerManager::SocketHandler {
     inline static EVP_PKEY *ca_pkey = nullptr;
 
     explicit HttpProxyServer(SocketHandlerManager &manager, int fd, std::string addr);
-    ~HttpProxyServer();
+    ~HttpProxyServer() override;
 
     int handleSocketRead() override;
     int handleSocketWrite() override;

@@ -38,6 +38,7 @@ int main(int argc, char const *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGPIPE, SIG_IGN);
     logger::setMinimalLogLevel(logger::INFO);
+    logger::setFilename("authority.txt");
 
     if (!init_libraries()) {
         logger::log(logger::ERROR, "unable to initialize the KP-ABE library");

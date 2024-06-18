@@ -60,7 +60,7 @@ int KpabeServer::handleSocketRead() {
         const std::string ip = remote_address.substr(0, remote_address.find(':'));
         switch (hash(json["type"].get<std::string_view>())) {
             using namespace std::string_view_literals;
-            case hash("client_renew"sv): {
+            /*case hash("client_renew"sv): {
                 auto it = client_infos.find(ip);
                 if (it == client_infos.end()) {
                     logger::log(logger::INFO, "(fd ", fd, ") ", ip, " is not in the database");
@@ -68,7 +68,7 @@ int KpabeServer::handleSocketRead() {
                 }
 
                 it->second.decryption_key.generate(master_key);
-            }  // no break because of extra stuff to do for renew
+            }  // no break because of extra stuff to do for renew */
             case hash("client_get"sv): {
                 logger::log(logger::DEBUG, "got get request from ", remote_address);
                 auto it = client_infos.find(ip);

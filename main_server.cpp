@@ -84,6 +84,7 @@ int main(int argc, char const *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGPIPE, SIG_IGN);
     logger::setMinimalLogLevel(logger::INFO);
+    logger::setFilename("server.txt");
 
     if (!init_libraries()) {
         std::cout << "unable to initialize the KP-ABE library" << std::endl;

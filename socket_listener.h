@@ -23,7 +23,7 @@ class SocketListener : public SocketHandlerManager::SocketHandler {
         logger::log(logger::DEBUG, "(fd ", fd, ") role is SocketListener");
     }
 
-    ~SocketListener() = default;
+    ~SocketListener() override = default;
 
     int handleSocketRead() override {
         sockaddr client_addr = {};

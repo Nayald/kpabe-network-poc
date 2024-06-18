@@ -13,7 +13,7 @@ class HttpsServer : public SocketHandlerManager::SocketHandler {
     inline static EVP_PKEY *ca_pkey = nullptr;
 
     explicit HttpsServer(SocketHandlerManager &manager, int fd, std::string addr);
-    ~HttpsServer();
+    ~HttpsServer() override;
 
     int handleSocketRead() override;
     int handleSocketWrite() override;

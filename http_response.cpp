@@ -82,7 +82,6 @@ void HttpResponseHeader::removeHeader(std::string name) {
 }
 
 std::string HttpResponseHeader::toString() const {
-    using namespace std::string_view_literals;
     size_t size = version.size();
     const std::string code = std::to_string(this->code);
     size += code.size() + message.size() + 4;
@@ -97,6 +96,7 @@ std::string HttpResponseHeader::toString() const {
     result += code;
     result += ' ';
     result += message;
+    using namespace std::string_view_literals;
     static constexpr std::string_view CRLF = "\r\n"sv;
     result += CRLF;
     for (const auto &header : headers) {
