@@ -73,83 +73,49 @@ int KpabeServer::handleSocketRead() {
                 logger::log(logger::DEBUG, "got get request from ", remote_address);
                 auto it = client_infos.find(ip);
                 if (it == client_infos.end()) {
-                    logger::log(logger::INFO, "(fd ", fd, ") ", ip, " is not in the database");
+                    logger::log(logger::INFO, "(fd ", fd, ") ", ip, " is not in database");
                     return 0;
                 }
 
-                /*std::stringstream public_key_raw_data;
-                public_key.serialize(public_key_raw_data);
-                std::stringstream decryption_key_raw_data;
-                it->second.decryption_key.serialize(decryption_key_raw_data);
-                nlohmann::json json_reply = {{"type", "info"},
+                ByteString public_key_raw;
+                public_key.serialize(public_key_raw);
+                ByteString decryption_key_raw;
+                it->second.decryption_key.serialize(decryption_key_raw);
+                nlohmann::json json_reply = {{"type", "client_info"},
                                              {"data",
-                                              {"public_key", base64_encode(public_key_raw_data.str())},
-                                              {"decryption_key", base64_encode((decryption_key_raw_data.str()))},
-                                              {"scalar_key", std::string(base64_encode(scalar_key, sizeof(scalar_key)))}}};
-                std::string msg = json_reply.dump();
-                logger::log(logger::DEBUG, msg);
-                write_buffer.insert(write_buffer.begin(), msg.begin(), msg.end());*/
-
+                                              {{"public_key", base64_encode(public_key_raw)},
+                                               {"decryption_key", base64_encode((decryption_key_raw))},
+                                               {"scalar_key", base64_encode(scalar_key, sizeof(scalar_key))}}}};
+                const std::string &&msg = json_reply.dump(4);
+                logger::log(logger::INFO, "(fd ", fd, ") json =\n", msg);
                 size_t pos = write_buffer.size();
-                write_buffer.emplace_back(0xff);
+                write_buffer.emplace_back(0xFF);
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
-                size_t msg_size = write_buffer.size();
-
-                static constexpr std::string_view JSON_PART1 = R"({"type":"client_info","data":{"public_key":")";
-                write_buffer.insert(write_buffer.end(), JSON_PART1.begin(), JSON_PART1.end());
-                ByteString raw_data;
-                public_key.serialize(raw_data);
-                std::string base64 = base64_encode(raw_data);
-                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-
-                static constexpr std::string_view JSON_PART2 = R"(","decryption_key":")";
-                write_buffer.insert(write_buffer.end(), JSON_PART2.begin(), JSON_PART2.end());
-                raw_data = ByteString();
-                it->second.decryption_key.serialize(raw_data);
-                base64 = base64_encode(raw_data);
-                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-
-                static constexpr std::string_view JSON_PART3 = R"(","scalar_key":")";
-                write_buffer.insert(write_buffer.end(), JSON_PART3.begin(), JSON_PART3.end());
-                base64 = std::string(base64_encode(scalar_key, sizeof(scalar_key)));
-                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-
-                static constexpr std::string_view JSON_PART4 = R"("}})";
-                write_buffer.insert(write_buffer.end(), JSON_PART4.begin(), JSON_PART4.end());
-                msg_size = write_buffer.size() - msg_size;
-                write_buffer[pos + 3] = msg_size & 0xFF;
-                write_buffer[pos + 2] = (msg_size >> 8) & 0xFF;
-                write_buffer[pos + 1] = (msg_size >> 16) & 0xFF;
+                write_buffer[pos + 3] = msg.size() & 0xFF;
+                write_buffer[pos + 2] = (msg.size() >> 8) & 0xFF;
+                write_buffer[pos + 1] = (msg.size() >> 16) & 0xFF;
+                write_buffer.insert(write_buffer.end(), msg.begin(), msg.end());
                 break;
             }
             case hash("verifier_get"sv): {
+                ByteString public_key_raw;
+                public_key.serialize(public_key_raw);
+                nlohmann::json json_reply = {
+                    {"type", "verifier_info"},
+                    {"data", {{"public_key", base64_encode(public_key_raw)}, {"scalar_key", base64_encode(scalar_key, sizeof(scalar_key))}}}};
+                const std::string &&msg = json_reply.dump(4);
+                logger::log(logger::INFO, "(fd ", fd, ") json =\n", msg);
                 size_t pos = write_buffer.size();
-                write_buffer.emplace_back(0xff);
+                write_buffer.emplace_back(0xFF);
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
                 write_buffer.emplace_back(0x00);
-                size_t msg_size = write_buffer.size();
-
-                static constexpr std::string_view JSON_PART1 = R"({"type":"verifier_info","data":{"public_key":")";
-                write_buffer.insert(write_buffer.end(), JSON_PART1.begin(), JSON_PART1.end());
-                ByteString raw_data;
-                public_key.serialize(raw_data);
-                std::string base64 = base64_encode(raw_data);
-                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-
-                static constexpr std::string_view JSON_PART2 = R"(","scalar_key":")";
-                write_buffer.insert(write_buffer.end(), JSON_PART2.begin(), JSON_PART2.end());
-                base64 = std::string(base64_encode(scalar_key, sizeof(scalar_key)));
-                write_buffer.insert(write_buffer.end(), base64.begin(), base64.end());
-
-                static constexpr std::string_view JSON_PART3 = R"("}})";
-                write_buffer.insert(write_buffer.end(), JSON_PART3.begin(), JSON_PART3.end());
-                msg_size = write_buffer.size() - msg_size;
-                write_buffer[pos + 3] = msg_size & 0xFF;
-                write_buffer[pos + 2] = (msg_size >> 8) & 0xFF;
-                write_buffer[pos + 1] = (msg_size >> 16) & 0xFF;
+                write_buffer[pos + 3] = msg.size() & 0xFF;
+                write_buffer[pos + 2] = (msg.size() >> 8) & 0xFF;
+                write_buffer[pos + 1] = (msg.size() >> 16) & 0xFF;
+                write_buffer.insert(write_buffer.end(), msg.begin(), msg.end());
                 break;
             }
             case hash("heartbeat"sv): {

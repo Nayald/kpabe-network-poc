@@ -79,6 +79,8 @@ int KpabeClient::handleSocketRead() {
                 raw_data = base64_decode(data["scalar_key"]);
                 std::memcpy(scalar_key, raw_data.data(), sizeof(scalar_key));
                 logger::log(logger::INFO, "(fd ", fd, ") keys have been updated");
+                logger::log(logger::INFO, "(fd ", fd, ") keys update took ",
+                            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
                 break;
             }
             case hash("verifier_info"sv): {
@@ -91,6 +93,9 @@ int KpabeClient::handleSocketRead() {
                 raw_data = base64_decode(data["scalar_key"]);
                 std::memcpy(scalar_key, raw_data.data(), sizeof(scalar_key));
                 logger::log(logger::INFO, "(fd ", fd, ") keys have been updated");
+                logger::log(logger::INFO, "(fd ", fd, ") keys update took ",
+                            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
+
                 break;
             }
             case hash("heartbeat_echo"sv): {
@@ -102,8 +107,6 @@ int KpabeClient::handleSocketRead() {
                 return 0;
                 break;
         }
-        logger::log(logger::INFO, "(fd ", fd, ") keys update took ",
-                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start));
 
         read_buffer.erase(read_buffer.begin(), read_buffer.begin() + 4 + msg_len);
     } while (!read_buffer.empty());
@@ -114,7 +117,7 @@ int KpabeClient::handleSocketRead() {
 int KpabeClient::handleSocketWrite() {
     using namespace std::string_view_literals;
     const auto now = std::chrono::steady_clock::now();
-    if (now - last_ask_time > ASK_DELAY) {
+    if (now >= next_ask_time) {
         logger::log(logger::DEBUG, "add get request");
         static constexpr std::string_view CLIENT_GET = R"({"type":"client_get"})"sv;
         static constexpr std::string_view VERIFIER_GET = R"({"type":"verifier_get"})"sv;
@@ -131,8 +134,8 @@ int KpabeClient::handleSocketWrite() {
                 write_buffer.insert(write_buffer.end(), VERIFIER_GET.begin(), VERIFIER_GET.end());
                 break;
         }
-        last_ask_time = now;
-    } else if (now - last_send_time > HEARTBEAT_DELAY) {
+        next_ask_time = now + ASK_DELAY;
+    } else if (now >= next_send_time) {
         logger::log(logger::DEBUG, "add heartbeat request");
         static constexpr std::string_view HEARTBEAT = R"({"type":"heartbeat"})"sv;
         write_buffer.emplace_back(0xFF);
@@ -156,13 +159,13 @@ int KpabeClient::handleSocketWrite() {
         return 0;
     }
 
-    last_send_time = now;
+    next_send_time = now + HEARTBEAT_DELAY;
     write_buffer.erase(write_buffer.begin(), write_buffer.begin() + size);
     logger::log(logger::DEBUG, "(fd ", fd, ") ", size, " bytes was sent, ", write_buffer.size(), " bytes remain in buffer");
     return 1;
 }
 
 bool KpabeClient::socketWantWrite() const {
-    return std::chrono::steady_clock::now() - last_ask_time > ASK_DELAY || std::chrono::steady_clock::now() - last_send_time > HEARTBEAT_DELAY ||
-           SocketHandler::socketWantWrite();
+    const auto now = std::chrono::steady_clock::now();
+    return now >= next_send_time || now >= next_ask_time || SocketHandler::socketWantWrite();
 }

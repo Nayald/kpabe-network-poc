@@ -28,9 +28,9 @@ class KpabeClient : public SocketHandlerManager::SocketHandler {
     bool socketWantWrite() const override;
 
     private:
-    MODE mode;
-    std::chrono::steady_clock::time_point last_send_time = {};
-    std::chrono::steady_clock::time_point last_ask_time = {};
+    const MODE mode;
+    std::chrono::steady_clock::time_point next_send_time;
+    std::chrono::steady_clock::time_point next_ask_time;
 };
 
 #endif
