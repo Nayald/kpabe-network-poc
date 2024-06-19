@@ -311,12 +311,10 @@ int HttpsServer::handleHttpRequest() {
                 case hash(".jpeg"sv):
                     static constexpr std::string_view JPG = "image/jpg\r\n"sv;
                     write_buffer.insert(write_buffer.end(), JPG.begin(), JPG.end());
-
                     break;
                 case hash(".png"sv):
                     static constexpr std::string_view PNG = "image/png\r\n"sv;
                     write_buffer.insert(write_buffer.end(), PNG.begin(), PNG.end());
-
                     break;
                 default:
                     // logger::log(logger::WARNING, "(fd ", fd, ") Unknown extension ", filepath.substr(extension_start + 1));
@@ -353,6 +351,9 @@ int HttpsServer::handleHttpRequest() {
                         write_buffer.insert(write_buffer.end(), encrypted_aes_key_base64.begin(), encrypted_aes_key_base64.end());
                         static constexpr std::string_view CRLF = "\r\n"sv;
                         write_buffer.insert(write_buffer.end(), CRLF.begin(), CRLF.end());
+                    } else {
+                        logger::log(logger::ERROR, "(fd ", fd, ") something go wrong with AES encryption for ", std::string_view(path, path_len));
+                        body.resize(body_len);
                     }
                 } else {
                     logger::log(logger::ERROR, "(fd ", fd, ") something go wrong with KP-ABE encryption for ", std::string_view(path, path_len));
@@ -362,7 +363,7 @@ int HttpsServer::handleHttpRequest() {
                 logger::log(logger::INFO, "(fd ", fd, ") KP-ABE encryption took ",
                             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_kpabe));
             } else {
-                logger::log(logger::WARNING, "(fd ", fd, ") unable to do KP-ABE encryption");
+                logger::log(logger::INFO, "(fd ", fd, ") KP-ABE encryption not available");
                 body.resize(body_len);
             }
 

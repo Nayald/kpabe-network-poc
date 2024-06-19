@@ -257,7 +257,7 @@ static int generate_certificate_callback(SSL *ssl, void *arg) {
 int HttpProxyServer::handleSslHandshake() {
     static SSL_CTX *ssl_ctx = SSL_CTX_new(TLS_method());
 
-    if (!ssl) {
+    if (!ssl) [[unlikely]] {
         logger::log(logger::INFO, "(fd ", fd, ") starts a new TLS session with ", remote_address);
         ssl = SSL_new(ssl_ctx);
         SSL_set_fd(ssl, fd);
@@ -388,11 +388,11 @@ std::shared_ptr<SocketHandlerManager::SocketHandler> HttpProxyServer::generatePe
                 break;
         }
 
-        res = res->ai_next;
+        close(client_fd);
         continue;
     }
 
-    if (client_fd < 0 || status < 0) {
+    if (status < 0) {
         freeaddrinfo(it->second.first);
         cache.erase(it);
         return nullptr;

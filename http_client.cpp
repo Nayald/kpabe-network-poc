@@ -243,7 +243,7 @@ int HttpClient::handleHttpResponseHeader() {
 
     // switch to raw mode if 101 Switch Protocol is reveived as it will no longer
     // be HTTP
-    if (response_header.getCode() == 101) {
+    if (response_header.getCode() == 101) [[unlikely]] {
         logger::log(logger::INFO, "(fd ", fd, ") got ", response_header.getCode(), ' ', response_header.getMessage(), " response from ",
                     remote_address);
         auto p = peer.lock();
@@ -311,6 +311,10 @@ int HttpClient::handleHttpResponseHeader() {
                 const bool success = dec_key_ciphertext.decrypt(dec_key.data(), kpabe_dec_key);
                 if (success) {
                     kpabe_method = AES_128_CBC;
+                    ctx = EVP_CIPHER_CTX_new();
+                    EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, dec_key.data(), dec_key.data() + 16);
+                    response_header.removeHeader("content-length");
+                    response_header.addOrReplaceHeader("transfer-encoding", "chunked");
                 } else {
                     response_header.setCode(403);
                     response_header.setMessage("Forbidden");
@@ -337,6 +341,28 @@ int HttpClient::handleHttpResponseHeader() {
     return read_buffer.empty() || !remaining_bytes || (is_chunked_body ? handleHttpChunkedBody() : handleHttpFixedLengthBody());
 }
 
+static std::string int2hex(size_t val) {
+    static constexpr std::array chars = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+    if (!val) {
+        return "0";
+    }
+
+    std::string hex;
+    hex.reserve(sizeof(val) / 4);
+    while (val) {
+        hex.push_back(chars[val & 0xF]);
+        val >>= 4;
+    }
+
+    for (size_t i = 0; i < hex.size() / 2; ++i) {
+        char tmp = hex[hex.size() - i - 1];
+        hex[hex.size() - i - 1] = hex[i];
+        hex[i] = tmp;
+    }
+
+    return hex;
+}
+
 int HttpClient::handleHttpFixedLengthBody() {
     auto p = peer.lock();
     if (!p) {
@@ -347,22 +373,61 @@ int HttpClient::handleHttpFixedLengthBody() {
     int size = std::min(read_buffer.size(), remaining_bytes);
     switch (kpabe_method) {
         case AES_128_CBC: {
-            // only decypt when whole body is in buffer
-            if (static_cast<size_t>(size) != remaining_bytes) {
+            /*            // only decypt when whole body is in buffer
+                        if (static_cast<size_t>(size) != remaining_bytes) {
+                            return 1;
+                        }
+
+                        unsigned char *plaintext = new unsigned char[remaining_bytes];
+                        // when AES_128_CBC, body_dec_key is 32 bytes with first 16 bytes as AES key
+                        // and others as IV
+                        size = aes_cbc_decrypt((unsigned char *)read_buffer.data(), remaining_bytes, dec_key.data(), dec_key.data() + 16, plaintext);
+                        // fill remaining bytes with blank to respect Content-Length provided by the
+                        // header
+                        std::memset(plaintext + size, ' ', remaining_bytes - size);
+                        p->socketWrite((char *)plaintext, remaining_bytes);
+                        read_buffer.erase(read_buffer.begin(), read_buffer.begin() + remaining_bytes);
+                        remaining_bytes = 0;
+                        kpabe_method = NONE;
+                        break;
+            */
+            const size_t block_size = size & ~15;
+            if (!block_size) {
                 return 1;
             }
 
-            unsigned char *plaintext = new unsigned char[remaining_bytes];
-            // when AES_128_CBC, body_dec_key is 32 bytes with first 16 bytes as AES key
-            // and others as IV
-            size = aes_cbc_decrypt((unsigned char *)read_buffer.data(), remaining_bytes, dec_key.data(), dec_key.data() + 16, plaintext);
-            // fill remaining bytes with blank to respect Content-Length provided by the
-            // header
-            std::memset(plaintext + size, ' ', remaining_bytes - size);
-            p->socketWrite((char *)plaintext, remaining_bytes);
-            read_buffer.erase(read_buffer.begin(), read_buffer.begin() + remaining_bytes);
-            remaining_bytes = 0;
-            kpabe_method = NONE;
+            if (!EVP_DecryptUpdate(ctx, reinterpret_cast<unsigned char *>(static_buffer.data()), &size,
+                                   reinterpret_cast<unsigned char *>(read_buffer.data()), block_size)) {
+                return 0;
+            }
+
+            using namespace std::string_view_literals;
+            static constexpr std::string_view CRLF = "\r\n"sv;
+            p->socketWrite(int2hex(size));
+            p->socketWrite(CRLF);
+            p->socketWrite(static_buffer.data(), size);
+            p->socketWrite(CRLF);
+            remaining_bytes -= block_size;
+            logger::log(logger::DEBUG, "(fd ", fd, ") forwarded a chunk of ", size, " bytes, ", remaining_bytes, " remaining bytes");
+            if (!remaining_bytes) {
+                int end_size = 0;
+                if (!EVP_DecryptFinal_ex(ctx, reinterpret_cast<unsigned char *>(static_buffer.data() + size), &end_size)) {
+                    return 0;
+                }
+
+                if (end_size > 0) {
+                    p->socketWrite(int2hex(end_size));
+                    p->socketWrite(CRLF);
+                    p->socketWrite(static_buffer.data() + size, end_size);
+                    p->socketWrite(CRLF);
+                }
+
+                p->socketWrite("0\r\n\r\n"sv);
+                kpabe_method = NONE;
+                EVP_CIPHER_CTX_free(ctx);
+            }
+
+            read_buffer.erase(read_buffer.begin(), read_buffer.begin() + block_size);
             break;
         }
         case NONE:

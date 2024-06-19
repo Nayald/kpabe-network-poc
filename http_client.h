@@ -44,6 +44,7 @@ class HttpClient : public SocketHandlerManager::SocketHandler {
     KPABE_DPVS_DECRYPTION_KEY kpabe_dec_key;
     KPABE_METHOD kpabe_method = NONE;
     std::vector<unsigned char> dec_key;
+    EVP_CIPHER_CTX *ctx;
 };
 
 #endif
