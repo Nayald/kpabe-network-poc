@@ -115,12 +115,11 @@ int KpabeClient::handleSocketRead() {
 }
 
 int KpabeClient::handleSocketWrite() {
-    using namespace std::string_view_literals;
     const auto now = std::chrono::steady_clock::now();
     if (now >= next_ask_time) {
         logger::log(logger::DEBUG, "add get request");
-        static constexpr std::string_view CLIENT_GET = R"({"type":"client_get"})"sv;
-        static constexpr std::string_view VERIFIER_GET = R"({"type":"verifier_get"})"sv;
+        static constexpr std::string_view CLIENT_GET = R"({"type":"client_get"})";
+        static constexpr std::string_view VERIFIER_GET = R"({"type":"verifier_get"})";
         write_buffer.emplace_back(0xFF);
         write_buffer.emplace_back(0x00);
         write_buffer.emplace_back(0x00);
@@ -137,7 +136,7 @@ int KpabeClient::handleSocketWrite() {
         next_ask_time = now + ASK_DELAY;
     } else if (now >= next_send_time) {
         logger::log(logger::DEBUG, "add heartbeat request");
-        static constexpr std::string_view HEARTBEAT = R"({"type":"heartbeat"})"sv;
+        static constexpr std::string_view HEARTBEAT = R"({"type":"heartbeat"})";
         write_buffer.emplace_back(0xFF);
         write_buffer.emplace_back(0x00);
         write_buffer.emplace_back(0x00);

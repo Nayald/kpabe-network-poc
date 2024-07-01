@@ -88,6 +88,7 @@ int HttpProxyServer::handleSocketRead() {
                 SSL_shutdown(ssl);
                 SSL_free(ssl);
                 ssl = nullptr;
+                is_over_ssl = false;
                 // endpoint may reuse the TCP socket
                 return 1;
             }
@@ -280,6 +281,8 @@ int HttpProxyServer::handleSslHandshake() {
                 logger::log(logger::WARNING, "(fd ", fd, ") TLS handshake halted by ", remote_address);
                 SSL_shutdown(ssl);
                 SSL_free(ssl);
+                ssl = nullptr;
+                is_over_ssl = false;
                 return -1;
             case SSL_ERROR_SYSCALL:
             case SSL_ERROR_SSL:

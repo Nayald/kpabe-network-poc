@@ -7,10 +7,10 @@ extern "C" {
 }
 
 #include <cerrno>
-#include <cstring>
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "kpabe_client.h"
 #include "kpabe_utils.h"
@@ -27,12 +27,12 @@ void signal_handler(int signal) {
 }
 
 int main(int argc, char const *argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " [queue_num]" << std::endl;
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " [authority ipv4] [authority port] [queue_num]" << std::endl;
         return 1;
     }
 
-    int queue_num = std::atoi(argv[1]);
+    int queue_num = std::stoul(argv[3]);
     if (queue_num < 0 || queue_num >= 65536) {
         std::cerr << "queue_num must have a value in the range [0, 65535]" << std::endl;
         return 1;
@@ -50,8 +50,8 @@ int main(int argc, char const *argv[]) {
 
     struct sockaddr_in authority_addr = {};
     authority_addr.sin_family = AF_INET;
-    authority_addr.sin_port = htons(10000);
-    authority_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    authority_addr.sin_port = htons(std::stoul(argv[2]));
+    authority_addr.sin_addr.s_addr = inet_addr(argv[1]);
 
     int authority_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (authority_sock < 0) {

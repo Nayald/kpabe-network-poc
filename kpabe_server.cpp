@@ -61,8 +61,8 @@ int KpabeServer::handleSocketRead() {
         switch (hash(json["type"].get<std::string_view>())) {
             using namespace std::string_view_literals;
             /*case hash("client_renew"sv): {
-                auto it = client_infos.find(ip);
-                if (it == client_infos.end()) {
+                auto it = client_decryption_keys.find(ip);
+                if (it == client_decryption_keys.end()) {
                     logger::log(logger::INFO, "(fd ", fd, ") ", ip, " is not in the database");
                     return 0;
                 }
@@ -71,8 +71,8 @@ int KpabeServer::handleSocketRead() {
             }  // no break because of extra stuff to do for renew */
             case hash("client_get"sv): {
                 logger::log(logger::DEBUG, "got get request from ", remote_address);
-                auto it = client_infos.find(ip);
-                if (it == client_infos.end()) {
+                auto it = client_decryption_keys.find(ip);
+                if (it == client_decryption_keys.end()) {
                     logger::log(logger::INFO, "(fd ", fd, ") ", ip, " is not in database");
                     return 0;
                 }
@@ -80,13 +80,13 @@ int KpabeServer::handleSocketRead() {
                 ByteString public_key_raw;
                 public_key.serialize(public_key_raw);
                 ByteString decryption_key_raw;
-                it->second.decryption_key.serialize(decryption_key_raw);
+                it->second.serialize(decryption_key_raw);
                 nlohmann::json json_reply = {{"type", "client_info"},
                                              {"data",
                                               {{"public_key", base64_encode(public_key_raw)},
                                                {"decryption_key", base64_encode((decryption_key_raw))},
                                                {"scalar_key", base64_encode(scalar_key, sizeof(scalar_key))}}}};
-                const std::string &&msg = json_reply.dump(4);
+                const std::string msg = json_reply.dump(4);
                 logger::log(logger::INFO, "(fd ", fd, ") json =\n", msg);
                 size_t pos = write_buffer.size();
                 write_buffer.emplace_back(0xFF);
@@ -105,7 +105,7 @@ int KpabeServer::handleSocketRead() {
                 nlohmann::json json_reply = {
                     {"type", "verifier_info"},
                     {"data", {{"public_key", base64_encode(public_key_raw)}, {"scalar_key", base64_encode(scalar_key, sizeof(scalar_key))}}}};
-                const std::string &&msg = json_reply.dump(4);
+                const std::string msg = json_reply.dump(4);
                 logger::log(logger::INFO, "(fd ", fd, ") json =\n", msg);
                 size_t pos = write_buffer.size();
                 write_buffer.emplace_back(0xFF);

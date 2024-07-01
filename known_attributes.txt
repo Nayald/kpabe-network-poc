@@ -1,0 +1,8 @@
+in-game-purchase
+violence
+horror
+bad-language
+sex
+drugs
+gambling
+discrimination

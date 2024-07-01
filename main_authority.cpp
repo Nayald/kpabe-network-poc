@@ -7,15 +7,14 @@ extern "C" {
 }
 
 #include <cerrno>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
-#include <tuple>
-#include <unordered_map>
+#include <string>
 
+#include "kpabe-content-filtering/keys/keys.hpp"
+#include "kpabe-content-filtering/kpabe/kpabe.hpp"
 #include "kpabe_server.h"
-#include "kpabe_utils.h"
 #include "logger.h"
 #include "socket_handler_manager.h"
 #include "socket_listener.h"
@@ -29,11 +28,9 @@ void signal_handler(int signal) {
 
 int main(int argc, char const *argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << "[listen_port]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " [listen_port]" << std::endl;
         return 1;
     }
-
-    uint16_t listen_port = std::atoi(argv[1]);
 
     signal(SIGINT, signal_handler);
     signal(SIGPIPE, SIG_IGN);
@@ -47,7 +44,7 @@ int main(int argc, char const *argv[]) {
 
     struct sockaddr_in listen_addr = {};
     listen_addr.sin_family = AF_INET;
-    listen_addr.sin_port = htons(listen_port);
+    listen_addr.sin_port = htons(std::stoul(argv[1]));
     listen_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -76,38 +73,49 @@ int main(int argc, char const *argv[]) {
     }
 
     KPABE_DPVS kpabe;
-    kpabe.setup();
-    KpabeServer::master_key = kpabe.get_master_key();
+    if (!kpabe.setup()) {
+        logger::log(logger::ERROR, "error while setup kpabe keys");
+        return 1;
+    }
+
+    KpabeServer::private_key = kpabe.get_master_key();
     KpabeServer::public_key = kpabe.get_public_key();
     RAND_bytes(KpabeServer::scalar_key, sizeof(KpabeServer::scalar_key));
     std::ifstream policies("policies.txt");
-    auto json = nlohmann::json::parse(policies);
+    const auto json = nlohmann::json::parse(policies);
     for (auto &entry : json) {
-        std::string ip = entry["ip"];
-        std::string policy = entry["policy"];
-        std::vector<std::string> wl;
-        for (auto &e : entry["wl"]) {
-            wl.emplace_back(e);
-        }
-
-        std::vector<std::string> bl;
-        for (auto &e : entry["bl"]) {
-            bl.emplace_back(e);
-        }
-
-        KPABE_DPVS_DECRYPTION_KEY dec_key(policy, wl, bl);
-        if (!dec_key.generate(KpabeServer::master_key)) {
-            logger::log(logger::WARNING, "failed to generate decryption key for ", ip);
+        const auto ip_it = entry.find("ip");
+        if (ip_it == entry.end() || ip_it->type() != nlohmann::json::value_t::string) {
+            logger::log(logger::WARNING, "in one entry, the ip value is not set or is not a string");
             continue;
         }
 
-        auto it = KpabeServer::client_infos.emplace(std::piecewise_construct, std::forward_as_tuple(ip),
-                                                    std::forward_as_tuple(std::move(policy), std::move(wl), std::move(bl), std::move(dec_key)));
-        if (!it.second) {
-            logger::log(logger::WARNING, "failed to insert key entry for ", ip);
-        } else {
-            logger::log(logger::DEBUG, "inserted entry for ", ip);
+        const auto policy_it = entry.find("policy");
+        if (policy_it == entry.end() || policy_it->type() != nlohmann::json::value_t::string) {
+            logger::log(logger::WARNING, "in one entry, the policy value is not set or is not a string");
+            continue;
         }
+
+        const auto wl_it = entry.find("wl");
+        if (wl_it == entry.end() || wl_it->type() != nlohmann::json::value_t::array) {
+            logger::log(logger::WARNING, "in one entry, the wl value is not set or is not an array (of strings)");
+            continue;
+        }
+
+        const auto bl_it = entry.find("bl");
+        if (bl_it == entry.end() || bl_it->type() != nlohmann::json::value_t::array) {
+            logger::log(logger::WARNING, "in one entry, the bl value is not set or is not an array (of strings)");
+            continue;
+        }
+
+        KPABE_DPVS_DECRYPTION_KEY dec_key(*policy_it, *wl_it, *bl_it);
+        if (!dec_key.generate(KpabeServer::private_key)) {
+            logger::log(logger::WARNING, "failed to generate decryption key for ", *ip_it);
+            continue;
+        }
+
+        KpabeServer::client_decryption_keys.insert_or_assign(*ip_it, std::move(dec_key));
+        logger::log(logger::INFO, "decryption key updated for ", *ip_it);
     }
 
     SocketHandlerManager manager;

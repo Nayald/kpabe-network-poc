@@ -22,11 +22,13 @@ extern "C" {
 #include <vector>
 
 #include "kpabe-content-filtering/dpvs/vector_ec.hpp"
+#include "kpabe-content-filtering/kpabe/kpabe.hpp"
 #include "kpabe_client.h"
 #include "kpabe_utils.h"
 #include "logger.h"
 #include "socket_handler_manager.h"
 #include "ssl_utils.h"
+#include "utils.h"
 
 // using sslData = std::pair<std::vector<unsigned char>, std::vector<unsigned
 // char>>;
@@ -215,11 +217,12 @@ int HttpClient::handleSslHandshake() {
                 SSL_shutdown(ssl);
                 delete reinterpret_cast<SslData *>(SSL_get_app_data(ssl));
                 SSL_free(ssl);
+                ssl = nullptr;
                 return -1;
             case SSL_ERROR_SYSCALL:
             case SSL_ERROR_SSL:
             default:
-                logger::log(logger::ERROR, "(fd ", fd, ") TLS hanshake failed with ", remote_address, " -> ",
+                logger::log(logger::ERROR, "(fd ", fd, ") TLS hanshake failed with ", remote_address, " -> ", std::strerror(errno), " / ",
                             ERR_error_string(ERR_get_error(), NULL));
                 return 0;
         }
@@ -263,18 +266,12 @@ int HttpClient::handleHttpResponseHeader() {
 
     do {
         using namespace std::string_view_literals;
-        static constexpr std::string_view TRIM_CHARS = " \n\r\t\f"sv;
         if (const auto v = response_header.getHeaderValue("content-length")) {
             logger::log(logger::DEBUG, "(fd ", fd, ") response body has a size of ", remaining_bytes);
             remaining_bytes = std::stoi(v.value());
         } else if (const auto v = response_header.getHeaderValue("transfer-encoding")) {
             // only handle chunked alone at the moment
-            std::string_view encoding = *v;
-            size_t trim_pos = encoding.find_first_not_of(TRIM_CHARS);
-            encoding.remove_prefix(trim_pos != v->npos ? trim_pos : encoding.size());
-            trim_pos = encoding.find_last_not_of(TRIM_CHARS);
-            encoding.remove_suffix(encoding.size() - (trim_pos != v->npos ? trim_pos + 1 : encoding.size()));
-            if (encoding != "chunked"sv) {
+            if (const auto encoding = trim(*v); encoding != "chunked"sv) {
                 logger::log(logger::WARNING, "(fd ", fd, ") unknown transfer-encoding: ", encoding);
                 remaining_bytes = -1;
                 break;
@@ -290,12 +287,7 @@ int HttpClient::handleHttpResponseHeader() {
         }
 
         if (const auto v = response_header.getHeaderValue("content-encoding")) {
-            std::string_view encoding = *v;
-            size_t trim_pos = encoding.find_first_not_of(TRIM_CHARS);
-            encoding.remove_prefix(trim_pos != v->npos ? trim_pos : encoding.size());
-            trim_pos = encoding.find_last_not_of(TRIM_CHARS);
-            encoding.remove_suffix(encoding.size() - (trim_pos != v->npos ? trim_pos + 1 : encoding.size()));
-            if (encoding != "aes_128_cbc/kp-abe"sv) {
+            if (const auto encoding = trim(*v); encoding != "aes_128_cbc/kp-abe"sv) {
                 logger::log(logger::WARNING, "(fd ", fd, ") no capability for content-encoding: ", encoding, " -> forward");
                 break;
             }
@@ -307,12 +299,12 @@ int HttpClient::handleHttpResponseHeader() {
                 KPABE_DPVS_CIPHERTEXT dec_key_ciphertext;
                 dec_key_ciphertext.deserialize(encrypted_dec_key);
                 dec_key_ciphertext.remove_scalar(scalar);
-                dec_key.resize(32);
-                const bool success = dec_key_ciphertext.decrypt(dec_key.data(), kpabe_dec_key);
+                content_dec_key.resize(32);
+                const bool success = dec_key_ciphertext.decrypt(content_dec_key.data(), kpabe_dec_key);
                 if (success) {
                     kpabe_method = AES_128_CBC;
                     ctx = EVP_CIPHER_CTX_new();
-                    EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, dec_key.data(), dec_key.data() + 16);
+                    EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, content_dec_key.data(), content_dec_key.data() + 16);
                     response_header.removeHeader("content-length");
                     response_header.addOrReplaceHeader("transfer-encoding", "chunked");
                 } else {
@@ -373,25 +365,7 @@ int HttpClient::handleHttpFixedLengthBody() {
     int size = std::min(read_buffer.size(), remaining_bytes);
     switch (kpabe_method) {
         case AES_128_CBC: {
-            /*            // only decypt when whole body is in buffer
-                        if (static_cast<size_t>(size) != remaining_bytes) {
-                            return 1;
-                        }
-
-                        unsigned char *plaintext = new unsigned char[remaining_bytes];
-                        // when AES_128_CBC, body_dec_key is 32 bytes with first 16 bytes as AES key
-                        // and others as IV
-                        size = aes_cbc_decrypt((unsigned char *)read_buffer.data(), remaining_bytes, dec_key.data(), dec_key.data() + 16, plaintext);
-                        // fill remaining bytes with blank to respect Content-Length provided by the
-                        // header
-                        std::memset(plaintext + size, ' ', remaining_bytes - size);
-                        p->socketWrite((char *)plaintext, remaining_bytes);
-                        read_buffer.erase(read_buffer.begin(), read_buffer.begin() + remaining_bytes);
-                        remaining_bytes = 0;
-                        kpabe_method = NONE;
-                        break;
-            */
-            const size_t block_size = size & ~15;
+            const int block_size = size & ~15;
             if (!block_size) {
                 return 1;
             }
@@ -401,8 +375,6 @@ int HttpClient::handleHttpFixedLengthBody() {
                 return 0;
             }
 
-            using namespace std::string_view_literals;
-            static constexpr std::string_view CRLF = "\r\n"sv;
             p->socketWrite(int2hex(size));
             p->socketWrite(CRLF);
             p->socketWrite(static_buffer.data(), size);
@@ -422,7 +394,7 @@ int HttpClient::handleHttpFixedLengthBody() {
                     p->socketWrite(CRLF);
                 }
 
-                p->socketWrite("0\r\n\r\n"sv);
+                p->socketWrite(std::string_view{"0\r\n\r\n"});
                 kpabe_method = NONE;
                 EVP_CIPHER_CTX_free(ctx);
             }
@@ -450,8 +422,6 @@ int HttpClient::handleHttpChunkedBody() {
         return 0;
     }
 
-    using namespace std::string_view_literals;
-    static constexpr std::string_view CRLF = "\r\n"sv;
     size_t chunk_inner_size = 0;
     size_t chunk_total_size = 0;
     do {

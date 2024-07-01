@@ -5,6 +5,7 @@ extern "C" {
 #include <string_view>
 
 #include "http_response.h"
+#include "utils.h"
 
 int HttpResponseHeader::parse(const std::vector<char> &buffer) {
     int minor_version;
@@ -96,11 +97,9 @@ std::string HttpResponseHeader::toString() const {
     result += code;
     result += ' ';
     result += message;
-    using namespace std::string_view_literals;
-    static constexpr std::string_view CRLF = "\r\n"sv;
     result += CRLF;
     for (const auto &header : headers) {
-        static constexpr std::string_view SEPARATOR = ": "sv;
+        static constexpr std::string_view SEPARATOR = ": ";
         result += header.first;
         result += SEPARATOR;
         result += header.second;

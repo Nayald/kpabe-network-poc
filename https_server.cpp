@@ -34,12 +34,11 @@ extern "C" {
 #include <vector>
 
 #include "https_server.h"
+#include "kpabe-content-filtering/kpabe/kpabe.hpp"
 #include "kpabe_utils.h"
 #include "logger.h"
 #include "ssl_utils.h"
 #include "utils.h"
-
-extern std::unordered_map<std::string, std::string> attributes;
 
 HttpsServer::HttpsServer(SocketHandlerManager &manager, int fd, std::string addr) : SocketHandler(manager, fd, std::move(addr)) {
     logger::log(logger::DEBUG, "(fd ", fd, ") role is HttpsServer");
@@ -72,6 +71,7 @@ int HttpsServer::handleSocketRead() {
         if (err == SSL_ERROR_ZERO_RETURN) {
             logger::log(logger::DEBUG, "(fd ", fd, ") TLS connection closed by ", remote_address);
             SSL_shutdown(ssl);
+            delete reinterpret_cast<KPABE_DPVS_PUBLIC_KEY *>(SSL_get_app_data(ssl));
             SSL_free(ssl);
             ssl = nullptr;
             // endpoint may reuse the TCP socket
@@ -164,7 +164,11 @@ int HttpsServer::handleSslHandshake() {
                 return -1;  // wait next call
             case SSL_ERROR_ZERO_RETURN:
                 logger::log(logger::WARNING, "(fd ", fd, ") TLS handshake halted by client");
-                return 0;
+                SSL_shutdown(ssl);
+                delete reinterpret_cast<KPABE_DPVS_PUBLIC_KEY *>(SSL_get_app_data(ssl));
+                SSL_free(ssl);
+                ssl = nullptr;
+                return 1;
             case SSL_ERROR_SYSCALL:
             case SSL_ERROR_SSL:
             default:
@@ -222,7 +226,7 @@ int HttpsServer::handleHttpRequest() {
                     "Connection: Keep-Alive"
                     "Content-Type: text/plain; charset=UTF-8\r\n"
                     "Content-Length: 19\r\n\r\n"
-                    "Unable to parse URI"sv;
+                    "Unable to parse URI";
                 write_buffer.insert(write_buffer.end(), PARSE_ERROR.begin(), PARSE_ERROR.end());
                 logger::log(logger::INFO, "(fd ", fd, ") respond to ", std::string_view(method, method_len), ' ', std::string_view(path, path_len),
                             " with 400 Bad Request");
@@ -236,14 +240,14 @@ int HttpsServer::handleHttpRequest() {
                     static constexpr std::string_view LOCATION_PART1 =
                         "HTTP/1.1 301 Moved Permanently\r\n"
                         "Server: KP-ABE Simple Webserver\r\n"
-                        "Location: "sv;
+                        "Location: ";
                     write_buffer.insert(write_buffer.end(), LOCATION_PART1.begin(), LOCATION_PART1.end());
                     write_buffer.insert(write_buffer.end(), path, path + path_end);
                     static constexpr std::string_view LOCATION_PART2 =
                         "/\r\n"
                         "Connection: Keep-Alive\r\n"
                         "Content-Type: text/html; charset=UTF8\r\n"
-                        "Content-Lengh: 21\r\n\r\nDirectory redirection"sv;
+                        "Content-Lengh: 21\r\n\r\nDirectory redirection";
                     write_buffer.insert(write_buffer.end(), LOCATION_PART2.begin(), LOCATION_PART2.end());
                     logger::log(logger::INFO, "(fd ", fd, ") respond to ", std::string_view(method, method_len), ' ',
                                 std::string_view(path, path_len), " with 301 Moved Permanently");
@@ -282,7 +286,7 @@ int HttpsServer::handleHttpRequest() {
                     "Connection: Keep-Alive\r\n"
                     "Content-Type: text/plain; charset=UTF-8\r\n"
                     "Content-Length: 23\r\n\r\n"
-                    "Unable to find ressouce"sv;
+                    "Unable to find ressouce";
                 write_buffer.insert(write_buffer.end(), NOT_FOUND.begin(), NOT_FOUND.end());
                 logger::log(logger::INFO, "(fd ", fd, ") respond to ", std::string_view(method, method_len), ' ', std::string_view(path, path_len),
                             " with 404 Not Found");
@@ -298,32 +302,31 @@ int HttpsServer::handleHttpRequest() {
                 "HTTP/1.1 200 OK\r\n"
                 "Server: KP-ABE Simple Webserver\r\n"
                 "Connection: Keep-Alive\r\n"
-                "Content-Type: "sv;
+                "Content-Type: ";
             write_buffer.insert(write_buffer.end(), HEADER_START.begin(), HEADER_START.end());
             const size_t extension_start = std::min(p.find_last_of('.', path_end), path_end);
             switch (hash(p.substr(extension_start, path_end - extension_start))) {
-                using namespace std::string_view_literals;
                 case hash(".html"sv):
-                    static constexpr std::string_view HTML = "text/html; charset=UTF8\r\n"sv;
+                    static constexpr std::string_view HTML = "text/html; charset=UTF8\r\n";
                     write_buffer.insert(write_buffer.end(), HTML.begin(), HTML.end());
                     break;
                 case hash(".jpg"sv):
                 case hash(".jpeg"sv):
-                    static constexpr std::string_view JPG = "image/jpg\r\n"sv;
+                    static constexpr std::string_view JPG = "image/jpg\r\n";
                     write_buffer.insert(write_buffer.end(), JPG.begin(), JPG.end());
                     break;
                 case hash(".png"sv):
-                    static constexpr std::string_view PNG = "image/png\r\n"sv;
+                    static constexpr std::string_view PNG = "image/png\r\n";
                     write_buffer.insert(write_buffer.end(), PNG.begin(), PNG.end());
                     break;
                 default:
                     // logger::log(logger::WARNING, "(fd ", fd, ") Unknown extension ", filepath.substr(extension_start + 1));
-                    static constexpr std::string_view DEFAULT = "text/plain\r\n"sv;
+                    static constexpr std::string_view DEFAULT = "text/plain\r\n";
                     write_buffer.insert(write_buffer.end(), DEFAULT.begin(), DEFAULT.end());
                     break;
             }
 
-            if (const auto it = attributes.find(filepath); SSL_get_app_data(ssl) && it != attributes.end()) {
+            if (const auto it = content_attributes.find(filepath); SSL_get_app_data(ssl) && it != content_attributes.end()) {
                 const auto start_kpabe = std::chrono::steady_clock::now();
                 unsigned char aes_key[32];
                 // RAND_bytes(aes_key, 32);
@@ -343,13 +346,12 @@ int HttpsServer::handleHttpRequest() {
                         body.resize(aes_size);
                         logger::log(logger::INFO, "(fd ", fd, ") AES encryption took ",
                                     std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_aes));
-                        static constexpr std::string_view KPABE_ENCODING = "Content-Encoding: aes_128_cbc/kp-abe\r\nDecryption-Key: "sv;
+                        static constexpr std::string_view KPABE_ENCODING = "Content-Encoding: aes_128_cbc/kp-abe\r\nDecryption-Key: ";
                         write_buffer.insert(write_buffer.end(), KPABE_ENCODING.begin(), KPABE_ENCODING.end());
                         ByteString encrypted_aes_key_raw;
                         aes_key_ciphertext.serialize(encrypted_aes_key_raw);
                         const std::string &&encrypted_aes_key_base64 = base64_encode(encrypted_aes_key_raw);
                         write_buffer.insert(write_buffer.end(), encrypted_aes_key_base64.begin(), encrypted_aes_key_base64.end());
-                        static constexpr std::string_view CRLF = "\r\n"sv;
                         write_buffer.insert(write_buffer.end(), CRLF.begin(), CRLF.end());
                     } else {
                         logger::log(logger::ERROR, "(fd ", fd, ") something go wrong with AES encryption for ", std::string_view(path, path_len));
@@ -367,11 +369,11 @@ int HttpsServer::handleHttpRequest() {
                 body.resize(body_len);
             }
 
-            static constexpr std::string_view CONTENT_LENGTH = "Content-Length: "sv;
+            static constexpr std::string_view CONTENT_LENGTH = "Content-Length: ";
             write_buffer.insert(write_buffer.end(), CONTENT_LENGTH.begin(), CONTENT_LENGTH.end());
             const std::string &&content_length = std::to_string(body.size());
             write_buffer.insert(write_buffer.end(), content_length.begin(), content_length.end());
-            static constexpr std::string_view HEADER_END = "\r\n\r\n"sv;
+            static constexpr std::string_view HEADER_END = "\r\n\r\n";
             write_buffer.insert(write_buffer.end(), HEADER_END.begin(), HEADER_END.end());
             write_buffer.insert(write_buffer.end(), body.begin(), body.end());
             logger::log(logger::INFO, "(fd ", fd, ") respond to ", std::string_view(method, method_len), ' ', std::string_view(path, path_len),
@@ -385,7 +387,7 @@ int HttpsServer::handleHttpRequest() {
                 "Connection: Keep-Alive\r\n"
                 "Content-Type: text/plain; charset=UTF-8\r\n"
                 "Content-Length: 30\r\n\r\n"
-                "Only GET method is implemented"sv;
+                "Only GET method is implemented";
             write_buffer.insert(write_buffer.end(), NOT_IMPLEMENTED.begin(), NOT_IMPLEMENTED.end());
             logger::log(logger::INFO, "(fd ", fd, ") respond to ", std::string_view(method, method_len), ' ', std::string_view(path, path_len),
                         " with 501 Not Implemented");

@@ -9,7 +9,7 @@ extern "C" {
 #include <vector>
 
 #include "http_response.h"
-#include "kpabe-content-filtering/kpabe/kpabe.hpp"
+#include "kpabe-content-filtering/keys/keys.hpp"
 #include "socket_handler_manager.h"
 
 class HttpClient : public SocketHandlerManager::SocketHandler {
@@ -43,7 +43,7 @@ class HttpClient : public SocketHandlerManager::SocketHandler {
     ZP scalar;
     KPABE_DPVS_DECRYPTION_KEY kpabe_dec_key;
     KPABE_METHOD kpabe_method = NONE;
-    std::vector<unsigned char> dec_key;
+    std::vector<unsigned char> content_dec_key;
     EVP_CIPHER_CTX *ctx;
 };
 

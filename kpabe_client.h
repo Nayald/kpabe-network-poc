@@ -5,7 +5,7 @@
 #include <chrono>
 #include <unordered_map>
 
-#include "kpabe_utils.h"
+#include "kpabe-content-filtering/keys/keys.hpp"
 #include "socket_handler_manager.h"
 
 class KpabeClient : public SocketHandlerManager::SocketHandler {

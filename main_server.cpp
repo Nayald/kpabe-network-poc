@@ -1,5 +1,3 @@
-#include <string_view>
-#include <utility>
 extern "C" {
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -17,15 +15,20 @@ extern "C" {
 
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "https_server.h"
 #include "kpabe-content-filtering/kpabe/kpabe.hpp"
 #include "logger.h"
 #include "socket_handler_manager.h"
 #include "socket_listener.h"
+#include "utils.h"
 
 bool stop = false;
 
@@ -34,40 +37,47 @@ void signal_handler(int signal) {
     stop = true;
 }
 
-std::unordered_map<std::string, std::string> attributes;
+std::unordered_set<std::string> known_attributes;
 
 std::string negate(const std::string_view &attributes) {
-    using namespace std::string_view_literals;
-    static constexpr std::string_view NOT_PREFIX = "no-"sv;
-    std::unordered_map<std::string_view, bool> neg_attrs = {{"in-game-purchase"sv, true}, {"violence"sv, true},      {"horror"sv, true},
-                                                            {"bad-language"sv, true},     {"sex"sv, true},           {"drugs"sv, true},
-                                                            {"gambling"sv, true},         {"discrimination"sv, true}};
-
-    size_t size = 0;
-    size_t last = 0;
-    size_t pos;
-    do {
-        pos = attributes.find('|', last);
-        std::string_view attr = attributes.substr(last, pos - last);
-        bool has_not_prefix = attr.starts_with(NOT_PREFIX);
-        attr.remove_prefix(NOT_PREFIX.size() * has_not_prefix);
-        size = attr.size() + NOT_PREFIX.size() * (neg_attrs[attr] = has_not_prefix);
-        last = pos + 1;
-    } while (pos != attributes.npos);
-
-    std::string result;
-    if (attributes.empty()) {
-        return result;
+    static constexpr std::string_view NOT_PREFIX = "no-";
+    std::unordered_set<std::string_view> attrs;
+    std::unordered_map<std::string_view, bool> negatable_attrs;
+    for (const auto &attr : known_attributes) {
+        negatable_attrs.try_emplace(attr, true);
     }
 
-    result.reserve(size + neg_attrs.size());
-    for (const auto &attr : neg_attrs) {
-        if (attr.second) {
-            result.append(NOT_PREFIX);
+    for (size_t last = 0, pos = 0; pos != attributes.npos; last = pos + 1) {
+        pos = attributes.find('|', last);
+        std::string_view attr = trim(attributes.substr(last, pos - last));
+        if (attr.empty()) {
+            continue;
         }
 
-        result.append(attr.first);
-        result.push_back('|');
+        if (attr.starts_with(NOT_PREFIX)) {
+            attr.remove_prefix(NOT_PREFIX.size());
+            attrs.erase(attr);
+            negatable_attrs.insert_or_assign(attr, true);
+        } else if (auto it = negatable_attrs.find(attr); it != negatable_attrs.end()) {
+            it->second = false;
+        } else {
+            attrs.emplace(attr);
+        }
+    }
+
+    std::string result;
+    for (const auto &attr : attrs) {
+        result += attr;
+        result += '|';
+    }
+
+    for (const auto &attr : negatable_attrs) {
+        if (attr.second) {
+            result += NOT_PREFIX;
+        }
+
+        result += attr.first;
+        result += '|';
     }
 
     result.pop_back();
@@ -77,7 +87,7 @@ std::string negate(const std::string_view &attributes) {
 
 int main(int argc, char const *argv[]) {
     if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << "[certificate path] [private key path]" << std::endl;
+        std::cout << "Usage: " << argv[0] << " [certificate path] [private key path]" << std::endl;
         return 1;
     }
 
@@ -133,24 +143,25 @@ int main(int argc, char const *argv[]) {
         return 1;
     }
 
-    std::ifstream file("attributes.txt", std::fstream::in);
+    std::ifstream file("known_attributes.txt");
     if (file.is_open()) {
         std::string line;
         while (std::getline(file, line)) {
-            std::string_view view = line;
-            size_t pos = view.find('\t');
-            view = view.substr(pos + 1);
+            known_attributes.emplace(std::move(line));
+        }
 
-            static constexpr std::string_view TRIM_CHARS = " \n\r\t\f";
-            size_t trim_pos = view.find_first_not_of(TRIM_CHARS);
-            view.remove_prefix(trim_pos != view.npos ? trim_pos : view.size());
-            trim_pos = view.find_last_not_of(TRIM_CHARS);
-            view.remove_suffix(view.size() - (trim_pos != view.npos ? trim_pos + 1 : view.size()));
-            if (view.empty()) {
-                continue;
+        file.close();
+    }
+
+    file = std::ifstream("attributes.txt");
+    if (file.is_open()) {
+        std::string line;
+        while (std::getline(file, line)) {
+            const std::string_view view = line;
+            const size_t pos = view.find('\t');
+            if (const auto attrs = negate(view.substr(pos + 1)); !attrs.empty()) {
+                HttpsServer::content_attributes.insert_or_assign(line.substr(0, pos), std::move(attrs));
             }
-
-            attributes.emplace(line.substr(0, pos), negate(line.substr(pos + 1)));
         }
         file.close();
     }

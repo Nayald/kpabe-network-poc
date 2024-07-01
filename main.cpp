@@ -17,8 +17,10 @@ extern "C" {
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <string>
 
 #include "http_proxy_server.h"
+#include "kpabe-content-filtering/kpabe/kpabe.hpp"
 #include "kpabe_client.h"
 #include "logger.h"
 #include "socket_handler_manager.h"
@@ -32,8 +34,9 @@ void signal_handler(int signal) {
 }
 
 int main(int argc, char const *argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << "[certificate path] [private key path]" << std::endl;
+    if (argc < 5) {
+        std::cerr << "Usage: " << argv[0] << " [certificate path] [private key path] [authority ipv4] [authority port] (listen ipv4) (listen port)"
+                  << std::endl;
         return 1;
     }
 
@@ -49,8 +52,8 @@ int main(int argc, char const *argv[]) {
 
     struct sockaddr_in listen_addr = {};
     listen_addr.sin_family = AF_INET;
-    listen_addr.sin_port = htons(8443);
-    listen_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    listen_addr.sin_port = htons(argc >= 7 ? std::stoul(argv[6]) : 8443);
+    listen_addr.sin_addr.s_addr = inet_addr(argc >= 6 ? argv[5] : "0.0.0.0");
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
@@ -91,8 +94,8 @@ int main(int argc, char const *argv[]) {
 
     struct sockaddr_in authority_addr = {};
     authority_addr.sin_family = AF_INET;
-    authority_addr.sin_port = htons(10000);
-    authority_addr.sin_addr.s_addr = inet_addr("152.81.4.181");
+    authority_addr.sin_port = htons(std::stoul(argv[4]));
+    authority_addr.sin_addr.s_addr = inet_addr(argv[3]);
 
     int authority_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (authority_sock < 0) {
@@ -112,7 +115,7 @@ int main(int argc, char const *argv[]) {
                                               KpabeClient::CLIENT));
     manager.add(std::make_shared<SocketListener<HttpProxyServer>>(manager, listen_sock));
     logger::log(logger::INFO, "listening on ", inet_ntoa(listen_addr.sin_addr), ':', htons(listen_addr.sin_port));
-    while (!stop && manager.handle(1000)) {
+    while (!stop && manager.handle()) {
     }
 
     logger::log(logger::DEBUG, "all done");

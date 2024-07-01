@@ -3,6 +3,10 @@ proxy
 server
 authority
 verifier
+proxy.txt
+server.txt
+authority.txt
+verifier.txt
 
 ### CMake ###
 CMakeLists.txt.user

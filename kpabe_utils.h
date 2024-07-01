@@ -2,8 +2,8 @@
 #define SSL_PROXY_KPABE_UTILS_H
 
 #include <cstdint>
-
-#include "kpabe-content-filtering/kpabe/kpabe.hpp"
+#include <iostream>
+#include <streambuf>
 
 constexpr uint16_t KPABE_PUB_KEY_EXT = 100;
 constexpr uint16_t KPABE_SCALAR_EXT = 101;
